@@ -7,10 +7,11 @@ AC_CONFIG_AUX_DIR([.])
 AM_INIT_AUTOMAKE([foreign])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIR([m4])
+LT_INIT
 
 AC_PROG_CXX
 AC_PROG_CC
-C_PROG_CXX
+AC_PROG_CXX
 AM_PATH_PYTHON
 AX_PYTHON_DEVEL
 AC_LANG(C++)
@@ -67,9 +68,9 @@ dnl -----------------------------------------------------------------------
 CXXFLAGS="$CXXFLAGS -Wall -Wno-deprecated -std=c++17"
 
 AC_CONFIG_FILES([
-    Makefile
-    serviceffmpeg/Makefile
-    plugin/Makefile
+Makefile
+serviceffmpeg/Makefile
+plugin/Makefile
 ])
 AC_OUTPUT
 
