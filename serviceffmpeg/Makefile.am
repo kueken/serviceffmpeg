@@ -45,6 +45,7 @@ endif
 
 ffmpeg_player_LDADD = \
 	$(FFMPEG_LIBS) \
+	-latomic \
 	-lpthread \
 	-lm
 

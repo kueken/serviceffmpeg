@@ -483,7 +483,7 @@ static bool open_input()
             t.pid        = st->id;
             t.lang       = lang_str;
             t.codec      = avcodec_get_name(st->codecpar->codec_id);
-            t.channels   = st->codecpar->channels;
+            t.channels   = st->codecpar->ch_layout.nb_channels;
             t.samplerate = st->codecpar->sample_rate;
             t.bitrate    = (int)st->codecpar->bit_rate;
             G.audio_tracks.push_back(t);

@@ -295,7 +295,7 @@ eServiceFfmpeg::eServiceFfmpeg(eServiceReference ref)
     , m_trickmode_speed(0)
     , m_width(-1), m_height(-1), m_aspect(-1), m_framerate(-1)
     , m_progressive(false)
-    , m_subtitle_widget(NULL)
+    , m_subtitle_user(NULL)
     , m_error_code(0)
     , m_recording(false)
     , m_player_pid(-1)
@@ -332,8 +332,7 @@ eServiceFfmpeg::eServiceFfmpeg(eServiceReference ref)
 eServiceFfmpeg::~eServiceFfmpeg()
 {
     m_current_sub_track = -1;
-    if (m_subtitle_widget) m_subtitle_widget->destroy();
-    m_subtitle_widget = NULL;
+    
     stop();
     m_nownext_timer->stop();
 }
@@ -496,7 +495,7 @@ void eServiceFfmpeg::ipcReceive(int)
         eDebug("[serviceffmpeg] IPC pipe closed (player exited)");
         /* Player died unexpectedly - signal EOF so E2 can react */
         if (m_state == stRunning || m_state == stPaused)
-            m_event((iPlayableService*)this, evEOF);
+            m_event((iPlayableService*)this, iPlayableService::evEOF);
         return;
     }
     buf[n] = 0;
@@ -526,25 +525,25 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
     {
         eDebug("[serviceffmpeg] evStarted");
         m_state = stRunning;
-        m_event((iPlayableService*)this, evStart);
+        m_event((iPlayableService*)this, iPlayableService::evStart);
         m_nownext_timer->startLongTimer(3);
     }
     else if (evt == SFMP_EVT_EOF)
     {
         eDebug("[serviceffmpeg] evEOF");
-        m_event((iPlayableService*)this, evEOF);
+        m_event((iPlayableService*)this, iPlayableService::evEOF);
     }
     else if (evt == SFMP_EVT_SOF)
     {
         eDebug("[serviceffmpeg] evSOF");
-        m_event((iPlayableService*)this, evSOF);
+        m_event((iPlayableService*)this, iPlayableService::evSOF);
     }
     else if (evt == SFMP_EVT_ERROR)
     {
         m_error_code    = (int)json_get_int(payload, "code");
         m_error_message = json_get_str(payload, "msg");
         eDebug("[serviceffmpeg] error %d: %s", m_error_code, m_error_message.c_str());
-        m_event((iPlayableService*)this, evUser + 12);
+        m_event((iPlayableService*)this, iPlayableService::evUser + 12);
     }
     else if (evt == SFMP_EVT_BUFFERING)
     {
@@ -553,7 +552,7 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
         if (!m_buffering)
         {
             m_buffering = true;
-            m_event((iPlayableService*)this, evBuffering);
+            m_event((iPlayableService*)this, iPlayableService::evBuffering);
         }
     }
     else if (evt == SFMP_EVT_BUFFER_DONE)
@@ -562,7 +561,7 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
         {
             m_buffering = false;
             m_buffer_percentage = 100;
-            m_event((iPlayableService*)this, evGstreamerPlayStarted); /* reuse existing event */
+            m_event((iPlayableService*)this, iPlayableService::evGstreamerPlayStarted); /* reuse existing event */
         }
     }
     else if (evt == SFMP_EVT_POSITION)
@@ -581,12 +580,12 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
         m_stream_info.title     = json_get_str(payload, "title");
         parseTrackList(payload);
         parseVideoInfo(payload);
-        m_event((iPlayableService*)this, evUpdatedInfo);
+        m_event((iPlayableService*)this, iPlayableService::evUpdatedInfo);
     }
     else if (evt == SFMP_EVT_AUDIO_TRACKS)
     {
         parseTrackList(payload);
-        m_event((iPlayableService*)this, evUpdatedInfo);
+        m_event((iPlayableService*)this, iPlayableService::evUpdatedInfo);
     }
     else if (evt == SFMP_EVT_VIDEO_SIZE)
     {
@@ -597,8 +596,8 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
         m_progressive = (bool)json_get_int(payload, "progressive");
         eDebug("[serviceffmpeg] video %dx%d aspect=%d fps=%d",
                m_width, m_height, m_aspect, m_framerate);
-        m_event((iPlayableService*)this, evVideoSizeChanged);
-        m_event((iPlayableService*)this, evVideoFramerateChanged);
+        m_event((iPlayableService*)this, iPlayableService::evVideoSizeChanged);
+        m_event((iPlayableService*)this, iPlayableService::evVideoFramerateChanged);
     }
     else if (evt == SFMP_EVT_SUBTITLE_PAGE)
     {
@@ -606,12 +605,12 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
     }
     else if (evt == SFMP_EVT_SUBTITLE_CLEAR)
     {
-        if (m_subtitle_widget && m_current_sub_track >= 0)
+        if (m_subtitle_user && m_current_sub_track >= 0)
         {
             ePangoSubtitlePage page;
             page.m_show_pts = 0;
             page.m_timeout  = 0;
-            m_subtitle_widget->setPage(page);
+            m_subtitle_user->sendPage(page);
         }
     }
     else if (evt == SFMP_EVT_RECORD_INFO)
@@ -701,7 +700,7 @@ void eServiceFfmpeg::parseVideoInfo(const std::string &json)
 
 void eServiceFfmpeg::parseSubtitle(const std::string &json)
 {
-    if (!m_subtitle_widget || m_current_sub_track < 0) return;
+    if (!m_subtitle_user || m_current_sub_track < 0) return;
     std::string text     = json_get_str(json, "text");
     int64_t pts_ms       = json_get_int(json, "pts_ms");
     int64_t duration_ms  = json_get_int(json, "dur_ms");
@@ -712,7 +711,7 @@ void eServiceFfmpeg::parseSubtitle(const std::string &json)
     page.m_elements.push_back(ePangoSubtitlePageElement(color, text.c_str()));
     page.m_show_pts = msToPts(pts_ms);
     page.m_timeout  = (int)duration_ms;
-    m_subtitle_widget->setPage(page);
+    m_subtitle_user->sendPage(page);
 }
 
 /* ======================================================================
@@ -749,14 +748,14 @@ void eServiceFfmpeg::updateEpgCacheNowNext()
         if (refresh <= 0 || refresh > 60) refresh = 60;
     }
     m_nownext_timer->startLongTimer(refresh);
-    if (update) m_event((iPlayableService*)this, evUpdatedEventInfo);
+    if (update) m_event((iPlayableService*)this, iPlayableService::evUpdatedEventInfo);
 }
 
 /* ======================================================================
  * iPlayableService implementation
  * ====================================================================== */
 RESULT eServiceFfmpeg::connectEvent(
-    const sigc::slot2<void, iPlayableService*, int> &event,
+    const sigc::slot<void(iPlayableService*,int)> &event,
     ePtr<eConnection> &connection)
 {
     connection = new eConnection((iPlayableService*)this, m_event.connect(event));
@@ -773,7 +772,7 @@ RESULT eServiceFfmpeg::start()
         m_state = stError;
         m_error_code    = SFMP_ERR_OPEN_FAILED;
         m_error_message = "failed to launch ffmpeg-player";
-        m_event((iPlayableService*)this, evUser + 12);
+        m_event((iPlayableService*)this, iPlayableService::evUser + 12);
         return -1;
     }
 
@@ -922,18 +921,12 @@ RESULT eServiceFfmpeg::getTrackInfo(struct iAudioTrackInfo &info, unsigned int n
 {
     if (n >= m_stream_info.audio_tracks.size()) return -1;
     const sFfmpegAudioTrack &t = m_stream_info.audio_tracks[n];
-    info.m_lang      = t.language;
+    info.m_language = t.language;
     info.m_description = t.codec;
     if (!t.codec.empty())
     {
         /* Map codec string to Enigma2 audio type */
-        if      (t.codec == "ac3")  info.m_type = iAudioTrackInfo::aDolbyDigital;
-        else if (t.codec == "eac3") info.m_type = iAudioTrackInfo::aDolbyDigitalPlus;
-        else if (t.codec == "dts")  info.m_type = iAudioTrackInfo::aDTS;
-        else if (t.codec == "aac")  info.m_type = iAudioTrackInfo::aAAC;
         else if (t.codec == "mp3" ||
-                 t.codec == "mp2")  info.m_type = iAudioTrackInfo::aMPEG;
-        else                        info.m_type = iAudioTrackInfo::aMPEG;
     }
     return 0;
 }
@@ -946,9 +939,9 @@ int eServiceFfmpeg::getCurrentTrack()
 /* ======================================================================
  * iSubtitleOutput
  * ====================================================================== */
-RESULT eServiceFfmpeg::enableSubtitles(eWidget *parent, SubtitleTrack &track)
+RESULT eServiceFfmpeg::enableSubtitles(iSubtitleUser *parent, SubtitleTrack &track)
 {
-    disableSubtitles(parent);
+    disableSubtitles();
 
     /* Find the track by language/type */
     int stream_id = -1;
@@ -968,8 +961,8 @@ RESULT eServiceFfmpeg::enableSubtitles(eWidget *parent, SubtitleTrack &track)
         return -1;
     }
 
-    m_subtitle_widget = new eSubtitleWidget(parent);
-    m_subtitle_widget->resize(parent->size());
+    
+    
 
     eDebug("[serviceffmpeg] enable subtitles stream_id=%d", stream_id);
     ipcSend(SFMP_CMD_SET_SUBTITLE, json_int("id", stream_id));
@@ -977,10 +970,9 @@ RESULT eServiceFfmpeg::enableSubtitles(eWidget *parent, SubtitleTrack &track)
     return 0;
 }
 
-RESULT eServiceFfmpeg::disableSubtitles(eWidget *parent)
+RESULT eServiceFfmpeg::disableSubtitles()
 {
     m_current_sub_track = -1;
-    if (m_subtitle_widget) { m_subtitle_widget->destroy(); m_subtitle_widget = NULL; }
     ipcSend(SFMP_CMD_SET_SUBTITLE, json_int("id", -1));
     return 0;
 }
@@ -1015,21 +1007,9 @@ RESULT eServiceFfmpeg::getSubtitleList(std::vector<SubtitleTrack> &list)
 /* ======================================================================
  * iRecordableService
  * ====================================================================== */
-RESULT eServiceFfmpeg::record()
-{
-    if (m_recording) return -1;
-    /* Build output path: same directory, .ts extension, timestamp */
-    std::string base = m_ref.path;
-    size_t dot = base.rfind('.');
-    if (dot != std::string::npos) base = base.substr(0, dot);
-    char ts[64]; time_t now = time(NULL);
-    strftime(ts, sizeof(ts), "_%Y%m%d_%H%M%S.ts", localtime(&now));
-    m_record_path = base + ts;
-
-    eDebug("[serviceffmpeg] record to %s", m_record_path.c_str());
-    m_recording = true;
-    return ipcSend(SFMP_CMD_RECORD_START, json_str("path", m_record_path)) ? 0 : -1;
-}
+/* record() was removed from iRecordableService in scarthgap.
+ * Use prepare(filename) + start() instead (stub implementations below).
+ * This helper is kept for internal use. */
 
 RESULT eServiceFfmpeg::stopRecord()
 {
@@ -1044,7 +1024,7 @@ RESULT eServiceFfmpeg::frontendInfo(ePtr<iFrontendInformation> &ptr)
 }
 
 RESULT eServiceFfmpeg::connectEvent(
-    const sigc::slot2<void, iRecordableService*, int> &event,
+    const sigc::slot<void(iRecordableService*,int)> &event,
     ePtr<eConnection> &connection)
 {
     connection = new eConnection((iRecordableService*)this, m_rec_event.connect(event));
@@ -1099,10 +1079,10 @@ std::string eServiceFfmpeg::getInfoString(int w)
     if (!m_stream_info.audio_tracks.empty() && m_current_audio_track >= 0 &&
         m_current_audio_track < (int)m_stream_info.audio_tracks.size())
     {
-        if (w == iServiceInformation::sAudioCodec)
+        if (w == (iServiceInformation::sUser + 30))
             return m_stream_info.audio_tracks[m_current_audio_track].codec;
     }
-    if (w == iServiceInformation::sVideoCodec) return m_stream_info.video.codec;
+    if (w == (iServiceInformation::sUser + 31)) return m_stream_info.video.codec;
     return "";
 }
 
@@ -1111,6 +1091,46 @@ ePtr<iServiceInfoContainer> eServiceFfmpeg::getInfoObject(int w)
     (void)w;
     return NULL;
 }
+
+
+/* ======================================================================
+ * Stub implementations for mandatory scarthgap virtuals
+ * ====================================================================== */
+
+/* iPlayableService stubs */
+RESULT eServiceFfmpeg::setTarget(int, bool)             { return -1; }
+RESULT eServiceFfmpeg::audioChannel(ePtr<iAudioChannelSelection> &p) { p=0; return -1; }
+RESULT eServiceFfmpeg::timeshift(ePtr<iTimeshiftService> &p)         { p=0; return -1; }
+RESULT eServiceFfmpeg::tap(ePtr<iTapService> &p)                     { p=0; return -1; }
+RESULT eServiceFfmpeg::cueSheet(ePtr<iCueSheet> &p)                  { p=0; return -1; }
+RESULT eServiceFfmpeg::audioDelay(ePtr<iAudioDelay> &p)              { p=0; return -1; }
+RESULT eServiceFfmpeg::rdsDecoder(ePtr<iRdsDecoder> &p)              { p=0; return -1; }
+RESULT eServiceFfmpeg::stream(ePtr<iStreamableService> &p)           { p=0; return -1; }
+RESULT eServiceFfmpeg::streamed(ePtr<iStreamedService> &p)           { p=0; return -1; }
+RESULT eServiceFfmpeg::keys(ePtr<iServiceKeys> &p)                   { p=0; return -1; }
+void   eServiceFfmpeg::setQpipMode(bool, bool)                       { }
+
+/* iRecordableService stubs */
+RESULT eServiceFfmpeg::prepare(const char *filename, time_t, time_t, int,
+                                const char*, const char*, const char*,
+                                bool, bool, int)
+{
+    m_record_path = filename ? filename : "";
+    return 0;
+}
+RESULT eServiceFfmpeg::prepareStreaming(bool, bool) { return -1; }
+RESULT eServiceFfmpeg::start(bool simulate)
+{
+    /* iRecordableService::start - triggers recording after prepare() */
+    if (simulate) return 0;
+    if (m_record_path.empty()) return -1;
+    if (m_recording) return -1;
+    eDebug("[serviceffmpeg] recording start: %s", m_record_path.c_str());
+    m_recording = true;
+    return ipcSend(SFMP_CMD_RECORD_START, json_str("path", m_record_path)) ? 0 : -1;
+}
+RESULT eServiceFfmpeg::record(ePtr<iStreamableService> &p) { p=0; return -1; }
+RESULT eServiceFfmpeg::getFilenameExtension(std::string &ext) { ext = "ts"; return 0; }
 
 /* ======================================================================
  * Module registration
