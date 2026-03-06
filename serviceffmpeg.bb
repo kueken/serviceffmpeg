@@ -17,7 +17,7 @@ DESCRIPTION = "Pure FFmpeg-based enigma2 media service plugin. \
     Replaces servicemp3 (GStreamer) with an external-process FFmpeg architecture. \
     No GStreamer runtime dependency required."
 LICENSE = "GPL-2.0-only"
-LIC_FILES_CHKSUM = "file://COPYING;md5=b234ee4d69f5fce4486a80fdaf4a4263"
+LIC_FILES_CHKSUM = "file://LICENSE;md5=b234ee4d69f5fce4486a80fdaf4a4263"
 
 # ---- Source ----
 # Local checkout during development:
