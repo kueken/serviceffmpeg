@@ -9,7 +9,7 @@ static PyMethodDef serviceffmpegMethods[] =
 
 static struct PyModuleDef moduledef = {
 	PyModuleDef_HEAD_INIT,
-	"servicehisilicon",		/* m_name */
+	"serviceffmpeg",		/* m_name */
 	"Module for serviceffmpeg",	/* m_doc */
 	-1,				/* m_size */
 	serviceffmpegMethods,	/* m_methods */

@@ -1,28 +1,26 @@
-AM_CFLAGS = \
-	-Wall
+# serviceffmpeg/Makefile.am
+# Enigma2 C++ service plugin shared library
 
-AM_CPPFLAGS = \
-	@PYTHON_CPPFLAGS@ \
-	$(FFMPEG_CFLAGS)
-	-include Python.h
-
-AM_CXXFLAGS = \
-	-Wall \
-	@ENIGMA2_CFLAGS@
-
+# Install directory: enigma2 SystemPlugins
 plugindir = $(libdir)/enigma2/python/Plugins/SystemPlugins/ServiceFFMPEG
 
 plugin_LTLIBRARIES = serviceffmpeg.la
 
-servicehisilicon_la_SOURCES = \
-    serviceffmpeg.cpp \
-    main.cpp \
-    pythonmodule.cpp
+serviceffmpeg_la_SOURCES = \
+	serviceffmpeg.cpp \
+	serviceffmpeg.h
 
-servicehisilicon_la_LDFLAGS = \
-    -avoid-version \
-    -module \
-    -shared
+serviceffmpeg_la_CXXFLAGS = \
+	$(ENIGMA2_CFLAGS) \
+	$(FFMPEG_CFLAGS) \
+	-fPIC \
+	-I$(top_srcdir)
 
-serviceffmpeg_la_LIBADD = $(FFMPEG_LIBS)
+serviceffmpeg_la_LIBADD = \
+	$(ENIGMA2_LIBS)
+
+serviceffmpeg_la_LDFLAGS = \
+	-module \
+	-avoid-version \
+	-no-undefined
 
