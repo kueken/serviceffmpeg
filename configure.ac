@@ -11,8 +11,10 @@ AC_CONFIG_MACRO_DIR([m4])
 
 AC_PROG_CXX
 AC_PROG_CC
-LT_INIT
-AC_PROG_INSTALL
+AC_PROG_CXX
+AM_PATH_PYTHON
+AX_PYTHON_DEVEL
+AC_LANG(C++)
 
 dnl -----------------------------------------------------------------------
 dnl Enigma2 headers (provides iservice.h, iplayableservice etc.)
