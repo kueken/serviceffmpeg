@@ -318,8 +318,8 @@ private:
     std::string                 m_record_path;
 
     /* sigc++-3.0: Signal<void(T*,int)> */
-    Signal<void(iRecordableService*,int)>  m_rec_event;
-    Signal<void(iPlayableService*,int)>    m_event;
+    PSignal<void(iRecordableService*,int)>  m_rec_event;
+    PSignal<void(iPlayableService*,int)>    m_event;
 
     ePtr<eTimer>                m_nownext_timer;
     ePtr<eServiceEvent>         m_event_now;

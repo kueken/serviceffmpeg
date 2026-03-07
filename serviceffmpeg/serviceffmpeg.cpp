@@ -561,7 +561,7 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
         {
             m_buffering = false;
             m_buffer_percentage = 100;
-            m_event((iPlayableService*)this, iPlayableService::evGstreamerPlayStarted); /* reuse existing event */
+            m_event((iPlayableService*)this, iPlayableService::evUpdatedInfo); /* reuse existing event */
         }
     }
     else if (evt == SFMP_EVT_POSITION)
@@ -597,7 +597,7 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
         eDebug("[serviceffmpeg] video %dx%d aspect=%d fps=%d",
                m_width, m_height, m_aspect, m_framerate);
         m_event((iPlayableService*)this, iPlayableService::evVideoSizeChanged);
-        m_event((iPlayableService*)this, iPlayableService::evVideoFramerateChanged);
+        m_event((iPlayableService*)this, iPlayableService::evVideoSizeChanged);
     }
     else if (evt == SFMP_EVT_SUBTITLE_PAGE)
     {
@@ -610,7 +610,7 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
             ePangoSubtitlePage page;
             page.m_show_pts = 0;
             page.m_timeout  = 0;
-            m_subtitle_user->sendPage(page);
+            m_subtitle_user->setPage(page);
         }
     }
     else if (evt == SFMP_EVT_RECORD_INFO)
@@ -711,7 +711,7 @@ void eServiceFfmpeg::parseSubtitle(const std::string &json)
     page.m_elements.push_back(ePangoSubtitlePageElement(color, text.c_str()));
     page.m_show_pts = msToPts(pts_ms);
     page.m_timeout  = (int)duration_ms;
-    m_subtitle_user->sendPage(page);
+    m_subtitle_user->setPage(page);
 }
 
 /* ======================================================================
@@ -921,13 +921,8 @@ RESULT eServiceFfmpeg::getTrackInfo(struct iAudioTrackInfo &info, unsigned int n
 {
     if (n >= m_stream_info.audio_tracks.size()) return -1;
     const sFfmpegAudioTrack &t = m_stream_info.audio_tracks[n];
-    info.m_language = t.language;
+    info.m_language    = t.language;
     info.m_description = t.codec;
-    if (!t.codec.empty())
-    {
-        /* Map codec string to Enigma2 audio type */
-        else if (t.codec == "mp3" ||
-    }
     return 0;
 }
 
@@ -942,6 +937,7 @@ int eServiceFfmpeg::getCurrentTrack()
 RESULT eServiceFfmpeg::enableSubtitles(iSubtitleUser *parent, SubtitleTrack &track)
 {
     disableSubtitles();
+    m_subtitle_user = parent;
 
     /* Find the track by language/type */
     int stream_id = -1;
@@ -972,6 +968,7 @@ RESULT eServiceFfmpeg::enableSubtitles(iSubtitleUser *parent, SubtitleTrack &tra
 
 RESULT eServiceFfmpeg::disableSubtitles()
 {
+    m_subtitle_user = NULL;
     m_current_sub_track = -1;
     ipcSend(SFMP_CMD_SET_SUBTITLE, json_int("id", -1));
     return 0;
