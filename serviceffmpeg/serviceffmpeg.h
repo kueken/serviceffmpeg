@@ -201,7 +201,6 @@ class eServiceFfmpeg
     , public iAudioTrackSelection
     , public iSubtitleOutput
     , public iRecordableService
-    , public Object
 {
     DECLARE_REF(eServiceFfmpeg);
 
@@ -318,8 +317,8 @@ private:
     std::string                 m_record_path;
 
     /* sigc++-3.0: Signal<void(T*,int)> */
-    PSignal<void(iRecordableService*,int)>  m_rec_event;
-    PSignal<void(iPlayableService*,int)>    m_event;
+    sigc::signal<void(iRecordableService*,int)>  m_rec_event;
+    sigc::signal<void(iPlayableService*,int)>    m_event;
 
     ePtr<eTimer>                m_nownext_timer;
     ePtr<eServiceEvent>         m_event_now;
