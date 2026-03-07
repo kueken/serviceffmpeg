@@ -32,7 +32,11 @@ EXTRA_OECONF = " \
 "
 
 do_install:append() {
+    # Remove libtool archives and static libs - not needed for a plugin
     find ${D} -name "*.la" -delete
+    find ${D} -name "*.a" -delete
+    # Remove __pycache__ dirs - OE regenerates them on target
+    find ${D} -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 }
 
 FILES:${PN} = " \
