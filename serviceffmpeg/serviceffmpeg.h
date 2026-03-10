@@ -178,8 +178,8 @@ public:
     int    getCurrentTrack();
 
     /* --- iSubtitleOutput --- */
-    RESULT enableSubtitles(eWidget *parent, SubtitleTrack &track);
-    RESULT disableSubtitles(eWidget *parent);
+    RESULT enableSubtitles(iSubtitleUser *user, SubtitleTrack &track);
+    RESULT disableSubtitles();
     RESULT getCachedSubtitle(SubtitleTrack &track);
     RESULT getSubtitleList(std::vector<SubtitleTrack> &subtitle_list);
 
@@ -224,7 +224,7 @@ private:
     int    m_error_code;
 
     /* Subtitle output */
-    eWidget        *m_subtitle_widget;
+    iSubtitleUser  *m_subtitle_user;
 
     /* exteplayer3 process */
     pid_t  m_player_pid;
