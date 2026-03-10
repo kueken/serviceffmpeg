@@ -247,12 +247,12 @@ eServiceFfmpeg::eServiceFfmpeg(eServiceReference ref)
     , m_seekable(true)
     , m_is_live(false)
     , m_error_code(0)
-    , m_subtitle_user(NULL)
+    , m_subtitle_widget(NULL)
     , m_player_pid(-1)
     , m_stdin_fd(-1)
     , m_stderr_fd(-1)
 {
-    memset(&m_video_info, 0, sizeof(m_video_info));
+    m_video_info = sFfmpegVideoInfo{};
 
     /* Parse extra headers / User-Agent from URI fragment (#key=val&...) */
     const std::string &path = m_ref.path;
@@ -583,7 +583,7 @@ void eServiceFfmpeg::onSubtitleList(const std::string &line)
 void eServiceFfmpeg::onSubtitleData(const std::string &line)
 {
     /* {"s_a":{"id":N,"s":MS_start,"e":MS_end,"t":"text"}} */
-    if (!m_subtitle_user) return;
+    if (!m_subtitle_widget || m_current_sub_idx < 0) return;
 
     std::string inner = json_inner(line, "s_a", '{', '}');
     if (inner.empty()) return;
@@ -594,27 +594,21 @@ void eServiceFfmpeg::onSubtitleData(const std::string &line)
 
     if (text.empty()) return;
 
-    /* Build ePangoSubtitlePage with a single line */
     ePangoSubtitlePage page;
-    page.m_show_pts  = msToPts(startMs);
-    page.m_timeout   = (int)((endMs - startMs) / 1000);
-    if (page.m_timeout <= 0) page.m_timeout = 5;
-
-    ePangoSubtitleEntry entry;
-    entry.m_text = text;
-    page.m_entries.push_front(entry);
-
-    m_subtitle_user->setPage(page);
+    gRGB color(0xD0, 0xD0, 0xD0);
+    page.m_elements.push_back(ePangoSubtitlePageElement(color, text.c_str()));
+    page.m_show_pts = msToPts(startMs);
+    page.m_timeout  = (int)(endMs - startMs);
+    if (page.m_timeout <= 0) page.m_timeout = 5000;
+    m_subtitle_widget->setPage(page);
 }
 
 void eServiceFfmpeg::onSubtitleFlush(const std::string &)
 {
     /* {"s_f":{"r":0}} — subtitle track reset, clear display */
-    if (m_subtitle_user) {
+    if (m_subtitle_widget) {
         ePangoSubtitlePage page;
-        page.m_show_pts = m_last_position;
-        page.m_timeout  = 0;
-        m_subtitle_user->setPage(page);
+        m_subtitle_widget->setPage(page);
     }
 }
 
@@ -862,10 +856,10 @@ RESULT eServiceFfmpeg::getTrackInfo(struct iAudioTrackInfo &info, unsigned int n
 /* =========================================================================
  * iSubtitleOutput
  * ======================================================================= */
-RESULT eServiceFfmpeg::enableSubtitles(iSubtitleUser *parent, SubtitleTrack &track)
+RESULT eServiceFfmpeg::enableSubtitles(eWidget *parent, SubtitleTrack &track)
 {
-    disableSubtitles();
-    m_subtitle_user = parent;
+    disableSubtitles(parent);
+    m_subtitle_widget = parent;
 
     /* Match track by language_code or pid (= ep3 track id) */
     for (int i = 0; i < (int)m_sub_tracks.size(); ++i) {
@@ -881,13 +875,16 @@ RESULT eServiceFfmpeg::enableSubtitles(iSubtitleUser *parent, SubtitleTrack &tra
     return -1;
 }
 
-RESULT eServiceFfmpeg::disableSubtitles()
+RESULT eServiceFfmpeg::disableSubtitles(eWidget *parent)
 {
+    if (m_subtitle_widget) {
+        m_subtitle_widget->destroy();
+        m_subtitle_widget = NULL;
+    }
     if (m_current_sub_idx >= 0) {
         sendCmd("si-1\n");
         m_current_sub_idx = -1;
     }
-    m_subtitle_user = NULL;
     return 0;
 }
 

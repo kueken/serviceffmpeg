@@ -46,14 +46,14 @@ struct sFfmpegSubtitleTrack {
 };
 
 struct sFfmpegVideoInfo {
-    std::string encoding;   /* e.g. "H264", "HEVC", "MPEG2VIDEO" */
-    int         width;
-    int         height;
-    int         framerate;  /* fps * 1000, from vc response */
-    int         progressive;
-    int         aspect_num; /* from vc (an field) */
-    int         aspect_den; /* from vc (ad field) */
-    int         aspect_ratio; /* raw from v_e (a field, ETSI/DVB value) */
+    std::string encoding;     /* e.g. "H264", "HEVC", "MPEG2VIDEO" */
+    int         width         = 0;
+    int         height        = 0;
+    int         framerate     = 0; /* fps * 1000, from vc response */
+    int         progressive   = 0;
+    int         aspect_num    = 0; /* from vc (an field) */
+    int         aspect_den    = 0; /* from vc (ad field) */
+    int         aspect_ratio  = 0; /* raw from v_e (a field, ETSI/DVB value) */
 };
 
 /* -------------------------------------------------------------------------
@@ -178,8 +178,8 @@ public:
     int    getCurrentTrack();
 
     /* --- iSubtitleOutput --- */
-    RESULT enableSubtitles(iSubtitleUser *parent, SubtitleTrack &track);
-    RESULT disableSubtitles();
+    RESULT enableSubtitles(eWidget *parent, SubtitleTrack &track);
+    RESULT disableSubtitles(eWidget *parent);
     RESULT getCachedSubtitle(SubtitleTrack &track);
     RESULT getSubtitleList(std::vector<SubtitleTrack> &subtitle_list);
 
@@ -224,7 +224,7 @@ private:
     int    m_error_code;
 
     /* Subtitle output */
-    iSubtitleUser *m_subtitle_user;
+    eWidget        *m_subtitle_widget;
 
     /* exteplayer3 process */
     pid_t  m_player_pid;
