@@ -2,24 +2,25 @@
 #define __SERVICEFFMPEG_H
 
 /*
- * serviceffmpeg.h
+ * serviceffmpeg.h  —  Enigma2 media service plugin using exteplayer3 as backend
  *
- * Enigma2 media service plugin - pure FFmpeg backend
- * External player process architecture (no GStreamer dependency)
+ * Architecture:
+ *   Enigma2  →  serviceffmpeg.so  →  fork/exec exteplayer3
  *
- * Fixed for scarthgap / OpenPLi 9.x:
- *   - sigc++-3.0: slot2<> -> slot<void(T*,int)>, Signal2 -> Signal<void(T*,int)>
- *   - iPlayableService / iRecordableService: new virtual interface methods
- *   - iAudioTrackInfo: m_language (not m_lang), no m_type member
- *   - eWidget: no destroy()/setPage() - use eSubtitleWidget
- *   - iServiceInformation: no sAudioCodec/sVideoCodec constants in this version
+ *   IPC:
+ *     stdin  pipe  (E2 → ep3):  text commands, one per line
+ *     stderr pipe  (ep3 → E2):  JSON events, one per line
+ *     terminate:  connect to /tmp/.exteplayerterm.socket
  *
- * License: GPL v2
+ *   exteplayer3 source: github.com/e2iplayer/exteplayer3  (PLi OE-mirror)
+ *   Binary installed to: /usr/bin/exteplayer3
+ *
+ * Replaces: servicemp3 (GStreamer), servicehisilicon (closed HAL)
+ * License:  GPL-2.0
  */
 
 #include <lib/base/ebase.h>
 #include <lib/base/eerror.h>
-#include <lib/base/thread.h>
 #include <lib/base/object.h>
 #include <lib/base/nconfig.h>
 #include <lib/dvb/epgcache.h>
@@ -27,138 +28,71 @@
 #include <lib/gui/esubtitle.h>
 
 #include <string>
-#include <list>
-#include <map>
 #include <vector>
 
-/* ======================================================================
- * IPC Protocol constants (serviceffmpeg <-> ffmpeg-player process)
- * ====================================================================== */
-#define SFMP_SOCKET_PATH        "/tmp/sfmp-%d.sock"
-#define SFMP_PROTO_VERSION      1
-
-#define SFMP_CMD_PLAY           "play"
-#define SFMP_CMD_STOP           "stop"
-#define SFMP_CMD_PAUSE          "pause"
-#define SFMP_CMD_RESUME         "resume"
-#define SFMP_CMD_SEEK           "seek"
-#define SFMP_CMD_SEEK_RELATIVE  "seek_rel"
-#define SFMP_CMD_SET_AUDIO      "set_audio"
-#define SFMP_CMD_SET_SUBTITLE   "set_subtitle"
-#define SFMP_CMD_SET_SPEED      "set_speed"
-#define SFMP_CMD_GET_INFO       "get_info"
-#define SFMP_CMD_SET_USERAGENT  "set_ua"
-#define SFMP_CMD_SET_HEADERS    "set_headers"
-#define SFMP_CMD_RECORD_START   "record_start"
-#define SFMP_CMD_RECORD_STOP    "record_stop"
-#define SFMP_CMD_BUFFERSIZE     "set_bufsize"
-
-#define SFMP_EVT_STARTED        "started"
-#define SFMP_EVT_EOF            "eof"
-#define SFMP_EVT_SOF            "sof"
-#define SFMP_EVT_ERROR          "error"
-#define SFMP_EVT_INFO           "info"
-#define SFMP_EVT_POSITION       "position"
-#define SFMP_EVT_BUFFERING      "buffering"
-#define SFMP_EVT_BUFFER_DONE    "buffer_done"
-#define SFMP_EVT_AUDIO_TRACKS   "audio_tracks"
-#define SFMP_EVT_SUB_TRACKS     "sub_tracks"
-#define SFMP_EVT_VIDEO_SIZE     "video_size"
-#define SFMP_EVT_SUBTITLE_PAGE  "subtitle"
-#define SFMP_EVT_SUBTITLE_CLEAR "subtitle_clear"
-#define SFMP_EVT_RECORD_INFO    "record_info"
-
-#define SFMP_ERR_OPEN_FAILED    1
-#define SFMP_ERR_CODEC_FAILED   2
-#define SFMP_ERR_NETWORK        3
-#define SFMP_ERR_UNSUPPORTED    4
-#define SFMP_ERR_TIMEOUT        5
-#define SFMP_ERR_PERMISSION     6
-
-/* ======================================================================
- * Track info structures
- * ====================================================================== */
-struct sFfmpegAudioTrack
-{
+/* -------------------------------------------------------------------------
+ * Track info structures (filled from ep3 JSON: al / sl / vc / v_e)
+ * ----------------------------------------------------------------------- */
+struct sFfmpegAudioTrack {
     int         id;
-    int         pid;
-    std::string language;
-    std::string codec;
-    int         channels;
-    int         samplerate;
-    int         bitrate;
+    std::string encoding;   /* e.g. "AC3", "AAC", "MP3", "DTS", "EAC3" */
+    std::string name;       /* language name or empty string */
 };
 
-struct sFfmpegSubtitleTrack
-{
+struct sFfmpegSubtitleTrack {
     int         id;
-    std::string language;
-    std::string codec;
-    bool        bitmap;
+    std::string encoding;   /* e.g. "SUBRIP", "ASS", "WEBVTT", "DVB", "PGS" */
+    std::string name;
 };
 
-struct sFfmpegVideoInfo
-{
-    std::string codec;
+struct sFfmpegVideoInfo {
+    std::string encoding;   /* e.g. "H264", "HEVC", "MPEG2VIDEO" */
     int         width;
     int         height;
-    int         aspect;
-    int         framerate;
-    int         bitrate;
-    bool        progressive;
+    int         framerate;  /* fps * 1000, from vc response */
+    int         progressive;
+    int         aspect_num; /* from vc (an field) */
+    int         aspect_den; /* from vc (ad field) */
+    int         aspect_ratio; /* raw from v_e (a field, ETSI/DVB value) */
 };
 
-struct sFfmpegStreamInfo
-{
-    sFfmpegVideoInfo                   video;
-    std::vector<sFfmpegAudioTrack>     audio_tracks;
-    std::vector<sFfmpegSubtitleTrack>  sub_tracks;
-    int64_t                            duration_ms;
-    bool                               seekable;
-    bool                               is_live;
-    std::string                        title;
-    std::string                        container;
-};
-
-/* ======================================================================
+/* -------------------------------------------------------------------------
  * eStaticServiceFfmpegInfo
- * ====================================================================== */
-class eStaticServiceFfmpegInfo
-    : public iStaticServiceInformation
+ * ----------------------------------------------------------------------- */
+class eStaticServiceFfmpegInfo : public iStaticServiceInformation
 {
     DECLARE_REF(eStaticServiceFfmpegInfo);
 public:
-    eStaticServiceFfmpegInfo();
+    eStaticServiceFfmpegInfo() {}
     RESULT getName(const eServiceReference &ref, std::string &name);
     int    getLength(const eServiceReference &ref);
     int    getInfo(const eServiceReference &ref, int w);
     long long getFileSize(const eServiceReference &ref);
-    RESULT getEvent(const eServiceReference &ref, ePtr<eServiceEvent> &evt, time_t start_time);
+    RESULT getEvent(const eServiceReference &ref, ePtr<eServiceEvent> &evt,
+                    time_t start_time);
 };
 
-/* ======================================================================
+/* -------------------------------------------------------------------------
  * eServiceFfmpegInfoContainer
- * ====================================================================== */
-class eServiceFfmpegInfoContainer
-    : public iServiceInfoContainer
+ * ----------------------------------------------------------------------- */
+class eServiceFfmpegInfoContainer : public iServiceInfoContainer
 {
     DECLARE_REF(eServiceFfmpegInfoContainer);
-    double          m_double;
-    unsigned char  *m_buf;
-    unsigned int    m_buf_size;
+    double         m_double;
+    unsigned char *m_buf;
+    unsigned int   m_buf_size;
 public:
     eServiceFfmpegInfoContainer();
     ~eServiceFfmpegInfoContainer();
-    double        getDouble(unsigned int idx) const;
+    double         getDouble(unsigned int idx) const;
     unsigned char *getBuffer(unsigned int &size) const;
-    void setDouble(double v);
+    void           setDouble(double v);
 };
 
-/* ======================================================================
+/* -------------------------------------------------------------------------
  * eServiceFactoryFfmpeg
- * ====================================================================== */
-class eServiceFactoryFfmpeg
-    : public iServiceHandler
+ * ----------------------------------------------------------------------- */
+class eServiceFactoryFfmpeg : public iServiceHandler
 {
     DECLARE_REF(eServiceFactoryFfmpeg);
     ePtr<eStaticServiceFfmpegInfo> m_service_info;
@@ -172,27 +106,13 @@ public:
     RESULT record(const eServiceReference &, ePtr<iRecordableService> &);
     RESULT list(const eServiceReference &, ePtr<iListableService> &);
     RESULT info(const eServiceReference &, ePtr<iStaticServiceInformation> &);
-    RESULT offlineOperations(const eServiceReference &, ePtr<iServiceOfflineOperations> &);
+    RESULT offlineOperations(const eServiceReference &,
+                             ePtr<iServiceOfflineOperations> &);
 };
 
-/* ======================================================================
- * eServiceFfmpeg
- *
- * sigc++-3.0 migration:
- *   OLD: sigc::slot2<void, T*, int>              -> NEW: sigc::slot<void(T*,int)>
- *   OLD: Signal2<void, T*, int>  (Enigma2 macro) -> NEW: Signal<void(T*,int)>
- *   OLD: connectEvent signature uses slot2<>     -> NEW: uses slot<void(T*,int)>
- *
- * iPlayableService / iRecordableService new mandatory virtuals (scarthgap):
- *   setTarget, audioChannel, timeshift, tap, cueSheet, audioDelay,
- *   rdsDecoder, stream, streamed, keys, setQpipMode (iPlayableService)
- *   prepare, prepareStreaming, start(bool), stream, getFilenameExtension (iRecordableService)
- *
- * iSubtitleOutput (scarthgap):
- *   enableSubtitles(iSubtitleUser*, SubtitleTrack&)
- *   disableSubtitles()   -- no parameter
- *
- * ====================================================================== */
+/* -------------------------------------------------------------------------
+ * eServiceFfmpeg  —  main service class
+ * ----------------------------------------------------------------------- */
 class eServiceFfmpeg
     : public iPlayableService
     , public iServiceInformation
@@ -209,7 +129,6 @@ public:
     ~eServiceFfmpeg();
 
     /* --- iPlayableService --- */
-    /* sigc++-3.0: slot<void(T*,int)> */
     RESULT connectEvent(const sigc::slot<void(iPlayableService*,int)> &event,
                         ePtr<eConnection> &connection);
     RESULT start();
@@ -221,7 +140,7 @@ public:
     RESULT audioTracks(ePtr<iAudioTrackSelection> &ptr);
     RESULT subtitle(ePtr<iSubtitleOutput> &ptr);
     RESULT info(ePtr<iServiceInformation> &ptr);
-    /* new mandatory virtuals in scarthgap iPlayableService */
+    /* scarthgap mandatory stubs */
     RESULT setTarget(int target, bool noaudio = false);
     RESULT audioChannel(ePtr<iAudioChannelSelection> &ptr);
     RESULT timeshift(ePtr<iTimeshiftService> &ptr);
@@ -258,23 +177,22 @@ public:
     RESULT getTrackInfo(struct iAudioTrackInfo &, unsigned int n);
     int    getCurrentTrack();
 
-    /* --- iSubtitleOutput (scarthgap signature) --- */
+    /* --- iSubtitleOutput --- */
     RESULT enableSubtitles(iSubtitleUser *parent, SubtitleTrack &track);
     RESULT disableSubtitles();
     RESULT getCachedSubtitle(SubtitleTrack &track);
     RESULT getSubtitleList(std::vector<SubtitleTrack> &subtitle_list);
 
-    /* --- iRecordableService --- */
-    /* sigc++-3.0 slot */
+    /* --- iRecordableService (stubs) --- */
     RESULT connectEvent(const sigc::slot<void(iRecordableService*,int)> &event,
                         ePtr<eConnection> &connection);
     RESULT getError(int &error);
     RESULT subServices(ePtr<iSubserviceList> &ptr);
-    /* new mandatory virtuals in scarthgap iRecordableService */
     RESULT prepare(const char *filename,
                    time_t begTime=-1, time_t endTime=-1, int eit_event_id=-1,
-                   const char *name=0, const char *descr=0, const char *tags=0,
-                   bool descramble=true, bool recordecm=false, int packetsize=188);
+                   const char *name=0, const char *descr=0,
+                   const char *tags=0, bool descramble=true,
+                   bool recordecm=false, int packetsize=188);
     RESULT prepareStreaming(bool descramble=true, bool includeecm=false);
     RESULT start(bool simulate=false);
     RESULT record(ePtr<iStreamableService> &ptr);
@@ -284,66 +202,84 @@ public:
 
 private:
     enum eState { stIdle, stRunning, stPaused, stStopped, stError };
-    eState                      m_state;
+    eState              m_state;
 
-    eServiceReference           m_ref;
-    std::string                 m_useragent;
-    std::string                 m_extra_headers;
+    eServiceReference   m_ref;
+    std::string         m_useragent;
+    std::string         m_extra_headers;
 
-    sFfmpegStreamInfo           m_stream_info;
-    int                         m_current_audio_track;
-    int                         m_current_sub_track;
-    int                         m_cached_sub_track;
+    /* Track info — filled from ep3 JSON after PLAYBACK_PLAY */
+    std::vector<sFfmpegAudioTrack>    m_audio_tracks;
+    std::vector<sFfmpegSubtitleTrack> m_sub_tracks;
+    sFfmpegVideoInfo                  m_video_info;
+    int  m_current_audio_idx;   /* index into m_audio_tracks */
+    int  m_current_sub_idx;     /* index into m_sub_tracks, -1 = none */
+    int  m_cached_sub_idx;      /* last explicitly enabled sub track */
 
-    bool                        m_paused;
-    bool                        m_buffering;
-    int                         m_buffer_percentage;
-    pts_t                       m_last_position;
-    pts_t                       m_duration;
-    bool                        m_seekable;
-    bool                        m_is_live;
-    int                         m_trickmode_speed;
+    /* Playback state */
+    pts_t  m_last_position;     /* last known position in PTS units */
+    pts_t  m_duration;          /* total duration in PTS units */
+    bool   m_seekable;
+    bool   m_is_live;
+    int    m_error_code;
 
-    int                         m_width, m_height, m_aspect, m_framerate;
-    bool                        m_progressive;
+    /* Subtitle output */
+    iSubtitleUser *m_subtitle_user;
 
-    /* Subtitle: use iSubtitleUser* (scarthgap), no eWidget */
-    iSubtitleUser              *m_subtitle_user;
+    /* exteplayer3 process */
+    pid_t  m_player_pid;
+    int    m_stdin_fd;           /* write-end → ep3 stdin  */
+    int    m_stderr_fd;          /* read-end  ← ep3 stderr */
+    ePtr<eSocketNotifier> m_sn_read;
+    std::string           m_read_buf;  /* partial-line accumulator */
 
-    int                         m_error_code;
-    std::string                 m_error_message;
+    /* EPG */
+    ePtr<eTimer>        m_nownext_timer;
+    ePtr<eServiceEvent> m_event_now;
+    ePtr<eServiceEvent> m_event_next;
 
-    bool                        m_recording;
-    std::string                 m_record_path;
+    /* Enigma2 event signals */
+    sigc::signal<void(iPlayableService*,int)>   m_event;
+    sigc::signal<void(iRecordableService*,int)> m_rec_event;
 
-    /* sigc++-3.0: Signal<void(T*,int)> */
-    sigc::signal<void(iRecordableService*,int)>  m_rec_event;
-    sigc::signal<void(iPlayableService*,int)>    m_event;
-
-    ePtr<eTimer>                m_nownext_timer;
-    ePtr<eServiceEvent>         m_event_now;
-    ePtr<eServiceEvent>         m_event_next;
-
-    pid_t                       m_player_pid;
-    int                         m_ipc_fd;
-    std::string                 m_socket_path;
-    ePtr<eSocketNotifier>       m_sn_ipc;
-    std::string                 m_ipc_recv_buf;
-
-    bool    launchPlayer();
-    void    killPlayer();
-    bool    ipcConnect();
-    bool    ipcSend(const std::string &cmd, const std::string &params = "");
-    void    ipcReceive(int fd);
-    void    handleEvent(const std::string &evt, const std::string &payload);
-    void    updateEpgCacheNowNext();
-
+    /* Helpers */
+    bool        launchPlayer();
+    void        stopPlayer();
+    void        sendCmd(const char *cmd);
     std::string buildUri() const;
-    void        parseTrackList(const std::string &json);
-    void        parseVideoInfo(const std::string &json);
-    void        parseSubtitle(const std::string &json);
-    pts_t       msToPts(int64_t ms) const  { return ms * 90;  }
-    int64_t     ptsToMs(pts_t pts) const   { return pts / 90; }
+
+    void  onStderrData(int fd);
+    void  processLine(const std::string &line);
+
+    /* JSON event handlers */
+    void  onEplayer3Extended(const std::string &line);
+    void  onPlaybackOpen(const std::string &line);
+    void  onPlaybackPlay(const std::string &line);
+    void  onPlaybackStop(const std::string &line);
+    void  onPlaybackPause(const std::string &line);
+    void  onPlaybackContinue(const std::string &line);
+    void  onPlaybackLength(const std::string &line);
+    void  onPositionUpdate(const std::string &line);   /* J */
+    void  onAudioList(const std::string &line);        /* al */
+    void  onAudioCurrent(const std::string &line);     /* ac */
+    void  onSubtitleList(const std::string &line);     /* sl */
+    void  onSubtitleData(const std::string &line);     /* s_a */
+    void  onSubtitleFlush(const std::string &line);    /* s_f */
+    void  onVideoInfoVc(const std::string &line);      /* vc  — from stdin query */
+    void  onVideoInfoVe(const std::string &line);      /* v_e — spontaneous from decoder */
+    void  onFfError(const std::string &line);          /* FF_ERROR */
+
+    /* Track parsers */
+    void  parseAudioList(const std::string &arr);
+    void  parseSubtitleList(const std::string &arr);
+
+    /* EPG */
+    void  updateEpgCacheNowNext();
+
+    /* Unit conversions */
+    static pts_t   secToPts(int64_t sec) { return sec * 90000LL; }
+    static int64_t ptsToSec(pts_t pts)   { return pts / 90000LL; }
+    static pts_t   msToPts(int64_t ms)   { return ms  * 90LL;    }
 };
 
 #endif /* __SERVICEFFMPEG_H */

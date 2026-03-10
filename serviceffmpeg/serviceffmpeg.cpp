@@ -1,10 +1,53 @@
 /*
- * serviceffmpeg.cpp
+ * serviceffmpeg.cpp  —  Enigma2 media service plugin using exteplayer3
  *
- * Enigma2 media service plugin - Enigma2-side glue
- * Spawns ffmpeg-player as external process, communicates via Unix socket.
+ * exteplayer3 IPC protocol (e2iplayer/exteplayer3, PLi OE-mirror build):
  *
- * License: GPL v2
+ *   stdin  commands (E2 → ep3):
+ *     q\n              stop/quit
+ *     p\n              pause
+ *     c\n              continue (unpause)
+ *     f<N>\n           fast-forward speed N
+ *     b<N>\n           fast-backward speed N
+ *     m<N>\n           slow-motion speed N
+ *     gf<sec>\n        seek absolute (force)
+ *     kf<sec>\n        seek relative (force)
+ *     j\n              query position → {"J":...}
+ *     l\n              query length  → {"PLAYBACK_LENGTH":...}
+ *     al\n             list audio tracks → {"al":[...]}
+ *     ac\n             current audio     → {"ac":{...}}
+ *     ai<idx>\n        switch audio by list-index
+ *     sl\n             list subtitle tracks → {"sl":[...]}
+ *     sc\n             current subtitle     → {"sc":{...}}
+ *     si<idx>\n        switch subtitle by list-index  (si-1 = disable)
+ *     vc\n             current video info → {"vc":{...}}
+ *
+ *   stderr events (ep3 → E2, one JSON object per line):
+ *     {"EPLAYER3_EXTENDED":{"version":69}}
+ *     {"PLAYBACK_OPEN":{"OutputName":"...","file":"...","sts":0}}
+ *     {"OUTPUT_OPEN":{"sts":0}}
+ *     {"PLAYBACK_PLAY":{"sts":0}}
+ *     {"PLAYBACK_STOP":{"sts":0}}
+ *     {"PLAYBACK_PAUSE":{"sts":0}}
+ *     {"PLAYBACK_CONTINUE":{"sts":0}}
+ *     {"PLAYBACK_FASTFORWARD":{"speed":N,"sts":0}}
+ *     {"PLAYBACK_FASTBACKWARD":{"speed":N,"sts":0}}
+ *     {"PLAYBACK_SEEK_ABS":{"sec":N,"sts":0}}
+ *     {"PLAYBACK_SEEK":{"sec":N,"sts":0}}
+ *     {"PLAYBACK_LENGTH":{"length":N,"sts":0}}
+ *     {"J":{"ms":N}}  or  {"J":{"ms":N,"lms":N}}
+ *     {"al":[{"id":N,"e":"ENC","n":"Name"},...]}
+ *     {"ac":{"id":N,"e":"ENC","n":"Name"}}
+ *     {"sl":[{"id":N,"e":"ENC","n":"Name"},...]}
+ *     {"sc":{"id":N,"e":"ENC","n":"Name"}}
+ *     {"vc":{"id":N,"e":"ENC","n":"","w":W,"h":H,"f":F,"p":P,"an":A,"ad":D}}
+ *     {"v_e":{"w":W,"h":H,"a":A,"f":F,"p":P}}  (spontaneous from linuxdvb_mipsel)
+ *     {"s_a":{"id":N,"s":MS,"e":MS,"t":"text"}}  (subtitle line)
+ *     {"s_f":{"r":0}}                             (subtitle flush)
+ *     {"FF_ERROR":{"msg":"...","code":N}}          (open error)
+ *   EOF on stderr pipe → playback ended (no explicit EOT event)
+ *
+ * License: GPL-2.0
  */
 
 #include "serviceffmpeg.h"
@@ -14,7 +57,6 @@
 #include <lib/base/init.h>
 #include <lib/base/init_num.h>
 #include <lib/base/nconfig.h>
-#include <lib/components/file_eraser.h>
 #include <lib/dvb/epgcache.h>
 #include <lib/dvb/dvbtime.h>
 #include <lib/gui/esubtitle.h>
@@ -22,219 +64,143 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/stat.h>
 #include <errno.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
-/* Path to the external player binary - installed alongside the .so */
-#ifndef SFMP_PLAYER_BIN
-#define SFMP_PLAYER_BIN  "/usr/bin/ffmpeg-player"
+#ifndef EXTEPLAYER3_BIN
+#define EXTEPLAYER3_BIN "/usr/bin/exteplayer3"
 #endif
 
-/* Position update interval in ms */
-#define SFMP_POSITION_INTERVAL  500
+/* =========================================================================
+ * Minimal JSON helpers (no external dependency, suitable for ep3 output)
+ * ======================================================================= */
 
-/* ======================================================================
- * Simple JSON helpers (no external dependency)
- * These are intentionally minimal - just enough to build/parse our protocol
- * ====================================================================== */
-static std::string json_str(const std::string &key, const std::string &val)
+/* Return value of first occurrence of "key":N (integer) */
+static int64_t json_int(const std::string &s, const char *key)
 {
-    return "\"" + key + "\":\"" + val + "\"";
-}
-static std::string json_int(const std::string &key, long long val)
-{
-    char buf[64]; snprintf(buf, sizeof(buf), "%lld", val);
-    return "\"" + key + "\":" + buf;
-}
-static std::string json_obj(const std::string &inner)
-{
-    return "{" + inner + "}";
-}
-
-/* Extract a string value from flat JSON: "key":"value" */
-static std::string json_get_str(const std::string &json, const std::string &key)
-{
-    std::string needle = "\"" + key + "\":\"";
-    size_t pos = json.find(needle);
-    if (pos == std::string::npos) return "";
-    pos += needle.length();
-    size_t end = json.find('"', pos);
-    if (end == std::string::npos) return "";
-    return json.substr(pos, end - pos);
+    std::string pat = std::string("\"") + key + "\":";
+    size_t p = s.find(pat);
+    if (p == std::string::npos) return 0;
+    p += pat.size();
+    while (p < s.size() && s[p] == ' ') ++p;
+    if (p >= s.size()) return 0;
+    bool neg = (s[p] == '-');
+    if (neg) ++p;
+    int64_t v = 0;
+    while (p < s.size() && isdigit((unsigned char)s[p]))
+        v = v * 10 + (s[p++] - '0');
+    return neg ? -v : v;
 }
 
-/* Extract an integer value from flat JSON: "key":12345 */
-static long long json_get_int(const std::string &json, const std::string &key)
+/* Return value of first occurrence of "key":"value" (string) */
+static std::string json_str(const std::string &s, const char *key)
 {
-    std::string needle = "\"" + key + "\":";
-    size_t pos = json.find(needle);
-    if (pos == std::string::npos) return 0;
-    pos += needle.length();
-    return strtoll(json.c_str() + pos, NULL, 10);
+    std::string pat = std::string("\"") + key + "\":\"";
+    size_t p = s.find(pat);
+    if (p == std::string::npos) return "";
+    p += pat.size();
+    size_t e = s.find('"', p);
+    if (e == std::string::npos) return "";
+    return s.substr(p, e - p);
 }
 
-/* ======================================================================
+/* True when top-level key exists anywhere in line */
+static bool json_has(const std::string &s, const char *key)
+{
+    return s.find(std::string("\"") + key + "\"") != std::string::npos;
+}
+
+/* Extract inner object/array string for a given key */
+static std::string json_inner(const std::string &s, const char *key, char open, char close)
+{
+    std::string pat = std::string("\"") + key + "\":";
+    size_t p = s.find(pat);
+    if (p == std::string::npos) return "";
+    p = s.find(open, p + pat.size());
+    if (p == std::string::npos) return "";
+    /* find matching close, handling nesting */
+    int depth = 1;
+    size_t q = p + 1;
+    while (q < s.size() && depth > 0) {
+        if (s[q] == open)  ++depth;
+        if (s[q] == close) --depth;
+        ++q;
+    }
+    return s.substr(p, q - p);
+}
+
+/* =========================================================================
  * eStaticServiceFfmpegInfo
- * ====================================================================== */
+ * ======================================================================= */
 DEFINE_REF(eStaticServiceFfmpegInfo);
-
-eStaticServiceFfmpegInfo::eStaticServiceFfmpegInfo() {}
 
 RESULT eStaticServiceFfmpegInfo::getName(const eServiceReference &ref, std::string &name)
 {
-    if (ref.name.length())
-        name = ref.name;
-    else
-    {
-        size_t last = ref.path.rfind('/');
-        name = (last != std::string::npos) ? ref.path.substr(last + 1) : ref.path;
-    }
+    if (!ref.name.empty()) { name = ref.name; return 0; }
+    size_t sl = ref.path.rfind('/');
+    name = (sl != std::string::npos) ? ref.path.substr(sl + 1) : ref.path;
     return 0;
 }
 
-int eStaticServiceFfmpegInfo::getLength(const eServiceReference &ref)
-{
-    return -1;
-}
-
-int eStaticServiceFfmpegInfo::getInfo(const eServiceReference &ref, int w)
-{
-    struct stat s;
-    switch (w)
-    {
-    case iServiceInformation::sTimeCreate:
-        if (stat(ref.path.c_str(), &s) == 0) return (int)s.st_mtime;
-        break;
-    case iServiceInformation::sFileSize:
-        if (stat(ref.path.c_str(), &s) == 0) return (int)s.st_size;
-        break;
-    }
-    return iServiceInformation::resNA;
-}
+int eStaticServiceFfmpegInfo::getLength(const eServiceReference &) { return -1; }
+int eStaticServiceFfmpegInfo::getInfo(const eServiceReference &, int)
+    { return iServiceInformation::resNA; }
 
 long long eStaticServiceFfmpegInfo::getFileSize(const eServiceReference &ref)
 {
-    struct stat s;
-    if (stat(ref.path.c_str(), &s) == 0) return s.st_size;
-    return 0;
+    struct stat st;
+    return (::stat(ref.path.c_str(), &st) == 0) ? (long long)st.st_size : 0LL;
 }
 
-RESULT eStaticServiceFfmpegInfo::getEvent(const eServiceReference &ref,
-                                           ePtr<eServiceEvent> &evt, time_t start_time)
-{
-    if (ref.path.find("://") != std::string::npos)
-    {
-        eServiceReference eq(ref);
-        eq.type = eServiceFactoryFfmpeg::id;
-        eq.path.clear();
-        return eEPGCache::getInstance()->lookupEventTime(eq, start_time, evt);
-    }
-    evt = 0;
-    return -1;
-}
+RESULT eStaticServiceFfmpegInfo::getEvent(const eServiceReference &,
+    ePtr<eServiceEvent> &evt, time_t)
+    { evt = NULL; return -1; }
 
-/* ======================================================================
+/* =========================================================================
  * eServiceFfmpegInfoContainer
- * ====================================================================== */
+ * ======================================================================= */
 DEFINE_REF(eServiceFfmpegInfoContainer);
 
 eServiceFfmpegInfoContainer::eServiceFfmpegInfoContainer()
-    : m_double(0.0), m_buf(NULL), m_buf_size(0) {}
+    : m_double(0), m_buf(NULL), m_buf_size(0) {}
 
 eServiceFfmpegInfoContainer::~eServiceFfmpegInfoContainer()
-{
-    delete[] m_buf;
-}
+    { free(m_buf); }
 
 double eServiceFfmpegInfoContainer::getDouble(unsigned int) const { return m_double; }
-unsigned char *eServiceFfmpegInfoContainer::getBuffer(unsigned int &size) const
-{
-    size = m_buf_size; return m_buf;
-}
+unsigned char *eServiceFfmpegInfoContainer::getBuffer(unsigned int &sz) const
+    { sz = m_buf_size; return m_buf; }
 void eServiceFfmpegInfoContainer::setDouble(double v) { m_double = v; }
 
-/* ======================================================================
- * eServiceFfmpegOfflineOperations
- * ====================================================================== */
-class eServiceFfmpegOfflineOperations : public iServiceOfflineOperations
-{
-    DECLARE_REF(eServiceFfmpegOfflineOperations);
-    eServiceReference m_ref;
-public:
-    eServiceFfmpegOfflineOperations(const eServiceReference &ref) : m_ref(ref) {}
-    RESULT deleteFromDisk(int simulate)
-    {
-        if (!simulate)
-        {
-            std::list<std::string> files;
-            getListOfFilenames(files);
-            eBackgroundFileEraser *eraser = eBackgroundFileEraser::getInstance();
-            for (auto &f : files)
-            {
-                if (eraser) eraser->erase(f.c_str());
-                else        ::unlink(f.c_str());
-            }
-        }
-        return 0;
-    }
-    RESULT getListOfFilenames(std::list<std::string> &res)
-    {
-        res.clear();
-        res.push_back(m_ref.path);
-        return 0;
-    }
-    RESULT reindex() { return -1; }
-};
-DEFINE_REF(eServiceFfmpegOfflineOperations);
-
-/* ======================================================================
+/* =========================================================================
  * eServiceFactoryFfmpeg
- * ====================================================================== */
+ * ======================================================================= */
 DEFINE_REF(eServiceFactoryFfmpeg);
 
 eServiceFactoryFfmpeg::eServiceFactoryFfmpeg()
 {
     ePtr<eServiceCenter> sc;
     eServiceCenter::getPrivInstance(sc);
-    if (sc)
-    {
-        std::list<std::string> ext;
-        /* Audio */
-        ext.push_back("mp3");  ext.push_back("mp2");  ext.push_back("m2a");
-        ext.push_back("ogg");  ext.push_back("oga");  ext.push_back("flac");
-        ext.push_back("wav");  ext.push_back("wave"); ext.push_back("aac");
-        ext.push_back("m4a");  ext.push_back("wma");  ext.push_back("ac3");
-        ext.push_back("dts");  ext.push_back("mka");  ext.push_back("ape");
-        ext.push_back("alac"); ext.push_back("opus"); ext.push_back("amr");
-        ext.push_back("au");   ext.push_back("wv");   ext.push_back("mid");
-        ext.push_back("aif");  ext.push_back("aiff");
-        /* Video */
-        ext.push_back("mkv");  ext.push_back("mp4");  ext.push_back("mov");
-        ext.push_back("avi");  ext.push_back("mpg");  ext.push_back("mpeg");
-        ext.push_back("mpe");  ext.push_back("m4v");  ext.push_back("vob");
-        ext.push_back("divx"); ext.push_back("flv");  ext.push_back("wmv");
-        ext.push_back("asf");  ext.push_back("3gp");  ext.push_back("3g2");
-        ext.push_back("rm");   ext.push_back("rmvb"); ext.push_back("ogm");
-        ext.push_back("ogv");  ext.push_back("webm"); ext.push_back("ts");
-        ext.push_back("m2ts"); ext.push_back("mts");  ext.push_back("dat");
-        ext.push_back("pva");  ext.push_back("wtv");  ext.push_back("stream");
-        ext.push_back("hevc"); ext.push_back("h264"); ext.push_back("h265");
-        ext.push_back("264");  ext.push_back("265");
-        /* Playlists / streams */
-        ext.push_back("m3u");  ext.push_back("m3u8"); ext.push_back("pls");
+    if (!sc) return;
 
-        /* Replace servicemp3 (0x1001) as the default handler */
-        sc->removeServiceFactory(0x1001);
-        sc->addServiceFactory(eServiceFactoryFfmpeg::id, this, ext);
-    }
+    std::list<std::string> ext;
+    static const char *exts[] = {
+        "mp4","m4v","m4a","mkv","avi","mov","wmv","flv","ts","m2ts","mts",
+        "mpg","mpeg","vob","iso","mp3","aac","flac","ogg","wav","wma","ac3",
+        "dts","m3u","m3u8","pls","divx","xvid","webm","ogv","3gp","3g2",
+        "rmvb","rm","asf","dat","trp","tp","rec","stream",NULL
+    };
+    for (int i = 0; exts[i]; ++i) ext.push_back(exts[i]);
+
+    sc->addServiceFactory(eServiceFactoryFfmpeg::id, this, ext);
     m_service_info = new eStaticServiceFfmpegInfo();
-    eDebug("[serviceffmpeg] registered, replacing servicemp3");
 }
 
 eServiceFactoryFfmpeg::~eServiceFactoryFfmpeg()
@@ -244,516 +210,519 @@ eServiceFactoryFfmpeg::~eServiceFactoryFfmpeg()
     if (sc) sc->removeServiceFactory(eServiceFactoryFfmpeg::id);
 }
 
-RESULT eServiceFactoryFfmpeg::play(const eServiceReference &ref, ePtr<iPlayableService> &ptr)
-{
-    ptr = new eServiceFfmpeg(ref);
-    return 0;
-}
+RESULT eServiceFactoryFfmpeg::play(const eServiceReference &ref,
+    ePtr<iPlayableService> &ptr)
+    { ptr = new eServiceFfmpeg(ref); return 0; }
 
-RESULT eServiceFactoryFfmpeg::record(const eServiceReference &ref, ePtr<iRecordableService> &ptr)
-{
-    ptr = new eServiceFfmpeg(ref);
-    return 0;
-}
+RESULT eServiceFactoryFfmpeg::record(const eServiceReference &ref,
+    ePtr<iRecordableService> &ptr)
+    { ptr = new eServiceFfmpeg(ref); return 0; }
 
-RESULT eServiceFactoryFfmpeg::list(const eServiceReference &, ePtr<iListableService> &ptr)
-{
-    ptr = 0; return -1;
-}
+RESULT eServiceFactoryFfmpeg::list(const eServiceReference &,
+    ePtr<iListableService> &ptr)
+    { ptr = NULL; return -1; }
 
-RESULT eServiceFactoryFfmpeg::info(const eServiceReference &ref, ePtr<iStaticServiceInformation> &ptr)
-{
-    ptr = m_service_info; return 0;
-}
+RESULT eServiceFactoryFfmpeg::info(const eServiceReference &,
+    ePtr<iStaticServiceInformation> &ptr)
+    { ptr = m_service_info; return 0; }
 
-RESULT eServiceFactoryFfmpeg::offlineOperations(const eServiceReference &ref,
-                                                  ePtr<iServiceOfflineOperations> &ptr)
-{
-    ptr = new eServiceFfmpegOfflineOperations(ref); return 0;
-}
+RESULT eServiceFactoryFfmpeg::offlineOperations(const eServiceReference &,
+    ePtr<iServiceOfflineOperations> &ptr)
+    { ptr = NULL; return -1; }
 
-/* ======================================================================
- * eServiceFfmpeg - Constructor / Destructor
- * ====================================================================== */
+/* =========================================================================
+ * eServiceFfmpeg  —  constructor / destructor
+ * ======================================================================= */
 DEFINE_REF(eServiceFfmpeg);
 
 eServiceFfmpeg::eServiceFfmpeg(eServiceReference ref)
     : m_state(stIdle)
     , m_ref(ref)
-    , m_useragent("Enigma2 HbbTV/1.1.7 (+PVR+RTSP+DL;OpenPLi;;;)")
-    , m_extra_headers("")
-    , m_current_audio_track(-1)
-    , m_current_sub_track(-1)
-    , m_cached_sub_track(-2)
-    , m_paused(false)
-    , m_buffering(false)
-    , m_buffer_percentage(0)
+    , m_useragent("Enigma2 HbbTV/1.4.2 (+PVR+RTSP+DL;OpenPLi;;;)")
+    , m_current_audio_idx(-1)
+    , m_current_sub_idx(-1)
+    , m_cached_sub_idx(-1)
     , m_last_position(0)
     , m_duration(0)
-    , m_seekable(false)
+    , m_seekable(true)
     , m_is_live(false)
-    , m_trickmode_speed(0)
-    , m_width(-1), m_height(-1), m_aspect(-1), m_framerate(-1)
-    , m_progressive(false)
-    , m_subtitle_user(NULL)
     , m_error_code(0)
-    , m_recording(false)
+    , m_subtitle_user(NULL)
     , m_player_pid(-1)
-    , m_ipc_fd(-1)
+    , m_stdin_fd(-1)
+    , m_stderr_fd(-1)
 {
-    m_nownext_timer = eTimer::create(eApp);
-    CONNECT(m_nownext_timer->timeout, eServiceFfmpeg::updateEpgCacheNowNext);
+    memset(&m_video_info, 0, sizeof(m_video_info));
 
-    /* Check for alternate user agent config */
-    if (eConfigManager::getConfigBoolValue("config.mediaplayer.useAlternateUserAgent"))
-        m_useragent = eConfigManager::getConfigValue("config.mediaplayer.alternateUserAgent");
-
-    /* Parse extra headers from URL fragment: url#key=val&key2=val2 */
-    size_t hash = m_ref.path.find('#');
-    if (hash != std::string::npos &&
-        (m_ref.path.compare(0, 4, "http") == 0 || m_ref.path.compare(0, 4, "rtsp") == 0))
-    {
-        m_extra_headers = m_ref.path.substr(hash + 1);
-        /* Extract User-Agent if present */
-        size_t ua_pos = m_extra_headers.find("User-Agent=");
-        if (ua_pos != std::string::npos)
-        {
-            size_t start = ua_pos + 11;
-            size_t end   = m_extra_headers.find('&', start);
-            m_useragent  = (end != std::string::npos)
-                           ? m_extra_headers.substr(start, end - start)
-                           : m_extra_headers.substr(start);
+    /* Parse extra headers / User-Agent from URI fragment (#key=val&...) */
+    const std::string &path = m_ref.path;
+    bool isNet = (path.compare(0,4,"http")==0 || path.compare(0,4,"rtsp")==0);
+    if (isNet) {
+        size_t h = path.find('#');
+        if (h != std::string::npos) {
+            m_extra_headers = path.substr(h + 1);
+            size_t ua = m_extra_headers.find("User-Agent=");
+            if (ua != std::string::npos) {
+                size_t s = ua + 11;
+                size_t e = m_extra_headers.find('&', s);
+                m_useragent = (e != std::string::npos)
+                    ? m_extra_headers.substr(s, e - s)
+                    : m_extra_headers.substr(s);
+            }
         }
     }
 
-    eDebug("[serviceffmpeg] created for uri=%s", m_ref.path.c_str());
+    /* Optional config override */
+    if (eConfigManager::getConfigBoolValue(
+            "config.mediaplayer.useAlternateUserAgent"))
+        m_useragent = eConfigManager::getConfigValue(
+            "config.mediaplayer.alternateUserAgent");
+
+    m_nownext_timer = eTimer::create(eApp);
+    CONNECT(m_nownext_timer->timeout, eServiceFfmpeg::updateEpgCacheNowNext);
+
+    eDebug("[serviceffmpeg] created: %s", m_ref.path.c_str());
 }
 
 eServiceFfmpeg::~eServiceFfmpeg()
 {
-    m_current_sub_track = -1;
-    
     stop();
     m_nownext_timer->stop();
+    eDebug("[serviceffmpeg] destroyed");
 }
 
-/* ======================================================================
+/* =========================================================================
  * Player process management
- * ====================================================================== */
+ * ======================================================================= */
 bool eServiceFfmpeg::launchPlayer()
 {
-    /* Build socket path using our PID so multiple instances don't collide */
-    char sock_path[128];
-    snprintf(sock_path, sizeof(sock_path), SFMP_SOCKET_PATH, (int)getpid());
-    m_socket_path = sock_path;
-
-    /* Create the Unix domain socket server side BEFORE fork,
-     * so the player can connect as soon as it's ready */
-    int srv_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (srv_fd < 0) { eDebug("[serviceffmpeg] socket() failed: %m"); return false; }
-
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, m_socket_path.c_str(), sizeof(addr.sun_path) - 1);
-    unlink(m_socket_path.c_str());
-
-    if (bind(srv_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
-    {
-        eDebug("[serviceffmpeg] bind() failed: %m");
-        close(srv_fd); return false;
-    }
-    listen(srv_fd, 1);
-
-    /* Build command line for ffmpeg-player */
-    std::string uri = buildUri();
-
-    pid_t pid = fork();
-    if (pid < 0) { eDebug("[serviceffmpeg] fork() failed: %m"); close(srv_fd); return false; }
-
-    if (pid == 0)
-    {
-        /* Child process */
-        /* Close all E2 file descriptors except stdin/stdout/stderr */
-        int maxfd = sysconf(_SC_OPEN_MAX);
-        for (int fd = 3; fd < maxfd; fd++)
-        {
-            if (fd != srv_fd) close(fd);
-        }
-
-        char sock_arg[128];
-        snprintf(sock_arg, sizeof(sock_arg), "--socket=%s", m_socket_path.c_str());
-
-        execl(SFMP_PLAYER_BIN, SFMP_PLAYER_BIN,
-              sock_arg,
-              "--uri", uri.c_str(),
-              NULL);
-
-        /* If execl fails */
-        fprintf(stderr, "[ffmpeg-player] execl failed: %s\n", strerror(errno));
-        _exit(127);
-    }
-
-    /* Parent */
-    m_player_pid = pid;
-    eDebug("[serviceffmpeg] launched player pid=%d", (int)pid);
-
-    /* Accept connection from player (with timeout) */
-    struct timeval tv = { 5, 0 };
-    fd_set rset;
-    FD_ZERO(&rset); FD_SET(srv_fd, &rset);
-    int sel = select(srv_fd + 1, &rset, NULL, NULL, &tv);
-    if (sel <= 0)
-    {
-        eDebug("[serviceffmpeg] player did not connect within 5s");
-        close(srv_fd);
-        killPlayer();
+    int stdin_pipe[2], stderr_pipe[2];
+    if (pipe(stdin_pipe) < 0 || pipe(stderr_pipe) < 0) {
+        eDebug("[serviceffmpeg] pipe() failed: %s", strerror(errno));
         return false;
     }
 
-    m_ipc_fd = accept(srv_fd, NULL, NULL);
-    close(srv_fd);  /* Done with listen socket */
+    m_player_pid = fork();
+    if (m_player_pid < 0) {
+        eDebug("[serviceffmpeg] fork() failed: %s", strerror(errno));
+        close(stdin_pipe[0]);  close(stdin_pipe[1]);
+        close(stderr_pipe[0]); close(stderr_pipe[1]);
+        return false;
+    }
 
-    if (m_ipc_fd < 0) { eDebug("[serviceffmpeg] accept() failed: %m"); killPlayer(); return false; }
+    if (m_player_pid == 0) {
+        /* ---- child ---- */
+        dup2(stdin_pipe[0],  STDIN_FILENO);
+        dup2(stderr_pipe[1], STDERR_FILENO);
+        close(stdin_pipe[0]);  close(stdin_pipe[1]);
+        close(stderr_pipe[0]); close(stderr_pipe[1]);
 
-    /* Make non-blocking for E2 event loop integration */
-    int flags = fcntl(m_ipc_fd, F_GETFL, 0);
-    fcntl(m_ipc_fd, F_SETFL, flags | O_NONBLOCK);
+        /* Build argument vector */
+        static char uri_buf[4096];
+        static char ua_buf[512];
+        static char hdr_buf[2048];
 
-    /* Register socket notifier so E2 calls ipcReceive() when data arrives */
-    m_sn_ipc = eSocketNotifier::create(eApp, m_ipc_fd, eSocketNotifier::Read);
-    CONNECT(m_sn_ipc->activated, eServiceFfmpeg::ipcReceive);
+        strncpy(uri_buf, buildUri().c_str(), sizeof(uri_buf)-1);
+        strncpy(ua_buf,  m_useragent.c_str(), sizeof(ua_buf)-1);
 
-    eDebug("[serviceffmpeg] IPC connected");
+        const char *argv[24];
+        int ac = 0;
+        argv[ac++] = EXTEPLAYER3_BIN;
+
+        if (!m_useragent.empty()) {
+            argv[ac++] = "-u";
+            argv[ac++] = ua_buf;
+        }
+
+        /* Pass raw fragment as HTTP headers string if present */
+        if (!m_extra_headers.empty()) {
+            strncpy(hdr_buf, m_extra_headers.c_str(), sizeof(hdr_buf)-1);
+            argv[ac++] = "-h";
+            argv[ac++] = hdr_buf;
+        }
+
+        /* Live-TS mode for network streams without a known duration */
+        if (m_is_live) argv[ac++] = "-v";
+
+        argv[ac++] = uri_buf;
+        argv[ac]   = NULL;
+
+        /* Die with parent */
+        prctl(PR_SET_PDEATHSIG, SIGKILL);
+
+        eDebug("[serviceffmpeg] exec: %s", uri_buf);
+        execv(EXTEPLAYER3_BIN, (char * const *)argv);
+        _exit(127);
+    }
+
+    /* ---- parent ---- */
+    close(stdin_pipe[0]);
+    close(stderr_pipe[1]);
+
+    m_stdin_fd  = stdin_pipe[1];
+    m_stderr_fd = stderr_pipe[0];
+
+    /* Non-blocking read on stderr */
+    int flags = fcntl(m_stderr_fd, F_GETFL, 0);
+    fcntl(m_stderr_fd, F_SETFL, flags | O_NONBLOCK);
+
+    m_sn_read = eSocketNotifier::create(eApp, m_stderr_fd, eSocketNotifier::Read);
+    CONNECT(m_sn_read->activated, eServiceFfmpeg::onStderrData);
+
+    m_state = stRunning;
+    eDebug("[serviceffmpeg] exteplayer3 pid=%d", (int)m_player_pid);
     return true;
 }
 
-void eServiceFfmpeg::killPlayer()
+void eServiceFfmpeg::stopPlayer()
 {
-    if (m_sn_ipc) { m_sn_ipc->stop(); m_sn_ipc = NULL; }
-    if (m_ipc_fd >= 0) { close(m_ipc_fd); m_ipc_fd = -1; }
+    if (m_player_pid <= 0) return;
 
-    if (m_player_pid > 0)
-    {
-        kill(m_player_pid, SIGTERM);
-        int status;
-        /* Give it 2 seconds then SIGKILL */
-        for (int i = 0; i < 20; i++)
-        {
-            usleep(100000);
-            if (waitpid(m_player_pid, &status, WNOHANG) == m_player_pid)
-                goto done;
-        }
+    /* 1. polite: send 'q' command via stdin */
+    sendCmd("q\n");
+
+    /* 2. standard ep3 terminate mechanism */
+    int sock = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock >= 0) {
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        strncpy(addr.sun_path, "/tmp/.exteplayerterm.socket",
+                sizeof(addr.sun_path)-1);
+        ::connect(sock, (struct sockaddr*)&addr, sizeof(addr));
+        ::close(sock);
+    }
+
+    /* 3. wait up to 300ms then SIGKILL */
+    usleep(300000);
+    int status;
+    if (waitpid(m_player_pid, &status, WNOHANG) == 0) {
         kill(m_player_pid, SIGKILL);
         waitpid(m_player_pid, &status, 0);
-done:
-        eDebug("[serviceffmpeg] player pid=%d reaped", (int)m_player_pid);
-        m_player_pid = -1;
     }
-    if (!m_socket_path.empty()) { unlink(m_socket_path.c_str()); m_socket_path.clear(); }
+    m_player_pid = -1;
+
+    m_sn_read = NULL;
+    if (m_stdin_fd  >= 0) { close(m_stdin_fd);  m_stdin_fd  = -1; }
+    if (m_stderr_fd >= 0) { close(m_stderr_fd); m_stderr_fd = -1; }
+}
+
+void eServiceFfmpeg::sendCmd(const char *cmd)
+{
+    if (m_stdin_fd < 0) return;
+    ssize_t r = write(m_stdin_fd, cmd, strlen(cmd));
+    (void)r;
+    eDebug("[serviceffmpeg] → %s", cmd);
 }
 
 std::string eServiceFfmpeg::buildUri() const
 {
-    std::string uri = m_ref.path;
-    /* Strip fragment (handled separately as headers) */
-    size_t hash = uri.find('#');
-    if (hash != std::string::npos) uri = uri.substr(0, hash);
-    /* Strip &suburi= (external subtitle, TODO) */
-    size_t sub = uri.find("&suburi=");
-    if (sub != std::string::npos) uri = uri.substr(0, sub);
-    return uri;
+    std::string path = m_ref.path;
+    /* Strip fragment from network URIs */
+    if (path.compare(0,4,"http")==0 || path.compare(0,4,"rtsp")==0) {
+        size_t h = path.find('#');
+        if (h != std::string::npos) path = path.substr(0, h);
+    }
+    return path;
 }
 
-/* ======================================================================
- * IPC send/receive
- * Wire format: one JSON object per line (newline terminated)
- * {"cmd":"play"}\n
- * {"evt":"started"}\n
- * {"evt":"position","pos_ms":12345,"dur_ms":98765}\n
- * ====================================================================== */
-bool eServiceFfmpeg::ipcSend(const std::string &cmd, const std::string &params)
+/* =========================================================================
+ * stderr pipe → JSON line dispatcher
+ * ======================================================================= */
+void eServiceFfmpeg::onStderrData(int fd)
 {
-    if (m_ipc_fd < 0) return false;
-    std::string msg = "{\"cmd\":\"" + cmd + "\"";
-    if (!params.empty()) msg += "," + params;
-    msg += "}\n";
-
-    ssize_t sent = write(m_ipc_fd, msg.c_str(), msg.length());
-    if (sent < 0) { eDebug("[serviceffmpeg] ipcSend write error: %m"); return false; }
-    return true;
-}
-
-void eServiceFfmpeg::ipcReceive(int)
-{
-    /* Read available data into line buffer */
     char buf[4096];
-    ssize_t n = read(m_ipc_fd, buf, sizeof(buf) - 1);
-    if (n <= 0)
-    {
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
-        eDebug("[serviceffmpeg] IPC pipe closed (player exited)");
-        /* Player died unexpectedly - signal EOF so E2 can react */
-        if (m_state == stRunning || m_state == stPaused)
+    ssize_t n = read(fd, buf, sizeof(buf)-1);
+    if (n <= 0) {
+        /* EOF: exteplayer3 exited — treat as end-of-track */
+        eDebug("[serviceffmpeg] stderr EOF — playback ended");
+        if (m_state == stRunning || m_state == stPaused) {
+            m_state = stStopped;
             m_event((iPlayableService*)this, iPlayableService::evEOF);
+        }
         return;
     }
-    buf[n] = 0;
-    m_ipc_recv_buf += buf;
+    buf[n] = '\0';
+    m_read_buf += buf;
 
-    /* Process complete lines */
     size_t pos;
-    while ((pos = m_ipc_recv_buf.find('\n')) != std::string::npos)
-    {
-        std::string line = m_ipc_recv_buf.substr(0, pos);
-        m_ipc_recv_buf   = m_ipc_recv_buf.substr(pos + 1);
-
-        if (line.empty()) continue;
-
-        std::string evt     = json_get_str(line, "evt");
-        std::string payload = line;   /* full JSON for further parsing */
-        handleEvent(evt, payload);
+    while ((pos = m_read_buf.find('\n')) != std::string::npos) {
+        std::string line = m_read_buf.substr(0, pos);
+        m_read_buf.erase(0, pos + 1);
+        if (!line.empty())
+            processLine(line);
     }
 }
 
-/* ======================================================================
- * Event dispatcher
- * ====================================================================== */
-void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payload)
+void eServiceFfmpeg::processLine(const std::string &line)
 {
-    if (evt == SFMP_EVT_STARTED)
-    {
-        eDebug("[serviceffmpeg] evStarted");
+    eDebug("[serviceffmpeg] ← %s", line.c_str());
+
+    /* Dispatch on first unique key in line */
+    if (json_has(line, "EPLAYER3_EXTENDED"))  { onEplayer3Extended(line); return; }
+    if (json_has(line, "PLAYBACK_OPEN"))      { onPlaybackOpen(line);     return; }
+    if (json_has(line, "PLAYBACK_PLAY"))      { onPlaybackPlay(line);     return; }
+    if (json_has(line, "PLAYBACK_STOP"))      { onPlaybackStop(line);     return; }
+    if (json_has(line, "PLAYBACK_PAUSE"))     { onPlaybackPause(line);    return; }
+    if (json_has(line, "PLAYBACK_CONTINUE"))  { onPlaybackContinue(line); return; }
+    if (json_has(line, "PLAYBACK_LENGTH"))    { onPlaybackLength(line);   return; }
+    if (json_has(line, "\"J\""))              { onPositionUpdate(line);   return; }
+    if (json_has(line, "\"al\""))             { onAudioList(line);        return; }
+    if (json_has(line, "\"ac\""))             { onAudioCurrent(line);     return; }
+    if (json_has(line, "\"sl\""))             { onSubtitleList(line);     return; }
+    if (json_has(line, "\"s_a\""))            { onSubtitleData(line);     return; }
+    if (json_has(line, "\"s_f\""))            { onSubtitleFlush(line);    return; }
+    if (json_has(line, "\"vc\""))             { onVideoInfoVc(line);      return; }
+    if (json_has(line, "\"v_e\""))            { onVideoInfoVe(line);      return; }
+    if (json_has(line, "FF_ERROR"))           { onFfError(line);          return; }
+    /* PLAYBACK_FASTFORWARD / PLAYBACK_FASTBACKWARD / PLAYBACK_SEEK* ignored */
+}
+
+/* =========================================================================
+ * JSON event handlers
+ * ======================================================================= */
+void eServiceFfmpeg::onEplayer3Extended(const std::string &)
+{
+    /* Player started and ready — request initial track/length info */
+    /* (actual info arrives after PLAYBACK_PLAY) */
+}
+
+void eServiceFfmpeg::onPlaybackOpen(const std::string &line)
+{
+    if (json_int(line, "sts") < 0) {
+        eDebug("[serviceffmpeg] PLAYBACK_OPEN failed");
+        m_state = stError;
+        m_event((iPlayableService*)this, iPlayableService::evUser + 12);
+    }
+}
+
+void eServiceFfmpeg::onPlaybackPlay(const std::string &line)
+{
+    if (json_int(line, "sts") == 0) {
         m_state = stRunning;
         m_event((iPlayableService*)this, iPlayableService::evStart);
         m_nownext_timer->startLongTimer(3);
-    }
-    else if (evt == SFMP_EVT_EOF)
-    {
-        eDebug("[serviceffmpeg] evEOF");
-        m_event((iPlayableService*)this, iPlayableService::evEOF);
-    }
-    else if (evt == SFMP_EVT_SOF)
-    {
-        eDebug("[serviceffmpeg] evSOF");
-        m_event((iPlayableService*)this, iPlayableService::evSOF);
-    }
-    else if (evt == SFMP_EVT_ERROR)
-    {
-        m_error_code    = (int)json_get_int(payload, "code");
-        m_error_message = json_get_str(payload, "msg");
-        eDebug("[serviceffmpeg] error %d: %s", m_error_code, m_error_message.c_str());
+        /* Request track lists and initial length */
+        sendCmd("al\n");
+        sendCmd("sl\n");
+        sendCmd("vc\n");
+        sendCmd("l\n");
+    } else {
+        m_state = stError;
         m_event((iPlayableService*)this, iPlayableService::evUser + 12);
     }
-    else if (evt == SFMP_EVT_BUFFERING)
-    {
-        int pct = (int)json_get_int(payload, "pct");
-        m_buffer_percentage = pct;
-        if (!m_buffering)
-        {
-            m_buffering = true;
-            m_event((iPlayableService*)this, iPlayableService::evBuffering);
-        }
+}
+
+void eServiceFfmpeg::onPlaybackStop(const std::string &)
+{
+    m_state = stStopped;
+    m_event((iPlayableService*)this, iPlayableService::evEOF);
+}
+
+void eServiceFfmpeg::onPlaybackPause(const std::string &)
+{
+    m_state = stPaused;
+    m_event((iPlayableService*)this, iPlayableService::evUpdatedInfo);
+}
+
+void eServiceFfmpeg::onPlaybackContinue(const std::string &)
+{
+    m_state = stRunning;
+    m_event((iPlayableService*)this, iPlayableService::evUpdatedInfo);
+}
+
+void eServiceFfmpeg::onPlaybackLength(const std::string &line)
+{
+    int64_t len = json_int(line, "length");
+    if (len > 0) {
+        m_duration = secToPts(len);
+        m_seekable = true;
     }
-    else if (evt == SFMP_EVT_BUFFER_DONE)
-    {
-        if (m_buffering)
-        {
-            m_buffering = false;
-            m_buffer_percentage = 100;
-            m_event((iPlayableService*)this, iPlayableService::evUpdatedInfo); /* reuse existing event */
-        }
-    }
-    else if (evt == SFMP_EVT_POSITION)
-    {
-        m_last_position = msToPts(json_get_int(payload, "pos_ms"));
-        m_duration      = msToPts(json_get_int(payload, "dur_ms"));
-        /* evUpdatedInfo would spam too much, position is pulled via getPlayPosition() */
-    }
-    else if (evt == SFMP_EVT_INFO)
-    {
-        /* Stream info arrived - parse tracks, video info, etc. */
-        m_seekable   = (bool)json_get_int(payload, "seekable");
-        m_is_live    = (bool)json_get_int(payload, "live");
-        m_duration   = msToPts(json_get_int(payload, "dur_ms"));
-        m_stream_info.container = json_get_str(payload, "container");
-        m_stream_info.title     = json_get_str(payload, "title");
-        parseTrackList(payload);
-        parseVideoInfo(payload);
+}
+
+void eServiceFfmpeg::onPositionUpdate(const std::string &line)
+{
+    /* {"J":{"ms":N}}  or  {"J":{"ms":N,"lms":N}} */
+    std::string inner = json_inner(line, "J", '{', '}');
+    if (inner.empty()) return;
+    int64_t ms  = json_int(inner, "ms");
+    int64_t lms = json_int(inner, "lms");
+    m_last_position = msToPts(ms);
+    if (lms > 0) m_duration = msToPts(lms);
+}
+
+void eServiceFfmpeg::onAudioList(const std::string &line)
+{
+    std::string arr = json_inner(line, "al", '[', ']');
+    if (!arr.empty()) {
+        parseAudioList(arr);
         m_event((iPlayableService*)this, iPlayableService::evUpdatedInfo);
     }
-    else if (evt == SFMP_EVT_AUDIO_TRACKS)
-    {
-        parseTrackList(payload);
+}
+
+void eServiceFfmpeg::onAudioCurrent(const std::string &line)
+{
+    /* {"ac":{"id":N,...}} — find matching index in m_audio_tracks */
+    std::string inner = json_inner(line, "ac", '{', '}');
+    if (inner.empty()) return;
+    int tid = (int)json_int(inner, "id");
+    for (int i = 0; i < (int)m_audio_tracks.size(); ++i) {
+        if (m_audio_tracks[i].id == tid) { m_current_audio_idx = i; break; }
+    }
+}
+
+void eServiceFfmpeg::onSubtitleList(const std::string &line)
+{
+    std::string arr = json_inner(line, "sl", '[', ']');
+    if (!arr.empty()) {
+        parseSubtitleList(arr);
         m_event((iPlayableService*)this, iPlayableService::evUpdatedInfo);
     }
-    else if (evt == SFMP_EVT_VIDEO_SIZE)
-    {
-        m_width       = (int)json_get_int(payload, "w");
-        m_height      = (int)json_get_int(payload, "h");
-        m_aspect      = (int)json_get_int(payload, "aspect");
-        m_framerate   = (int)json_get_int(payload, "fps");
-        m_progressive = (bool)json_get_int(payload, "progressive");
-        eDebug("[serviceffmpeg] video %dx%d aspect=%d fps=%d",
-               m_width, m_height, m_aspect, m_framerate);
-        m_event((iPlayableService*)this, iPlayableService::evVideoSizeChanged);
-        m_event((iPlayableService*)this, iPlayableService::evVideoSizeChanged);
-    }
-    else if (evt == SFMP_EVT_SUBTITLE_PAGE)
-    {
-        parseSubtitle(payload);
-    }
-    else if (evt == SFMP_EVT_SUBTITLE_CLEAR)
-    {
-        if (m_subtitle_user && m_current_sub_track >= 0)
-        {
-            ePangoSubtitlePage page;
-            page.m_show_pts = 0;
-            page.m_timeout  = 0;
-            m_subtitle_user->setPage(page);
-        }
-    }
-    else if (evt == SFMP_EVT_RECORD_INFO)
-    {
-        /* recording progress - can be forwarded if needed */
-    }
-    else
-    {
-        eDebug("[serviceffmpeg] unknown event: %s", evt.c_str());
-    }
 }
 
-/* ======================================================================
- * Track list parsing
- * Audio tracks JSON fragment: "audio":[{"id":0,"lang":"deu","codec":"ac3","ch":2},...] 
- * ====================================================================== */
-void eServiceFfmpeg::parseTrackList(const std::string &json)
+void eServiceFfmpeg::onSubtitleData(const std::string &line)
 {
-    /* Simple linear scan - not a full JSON parser but sufficient for our protocol */
-    m_stream_info.audio_tracks.clear();
-    m_stream_info.sub_tracks.clear();
+    /* {"s_a":{"id":N,"s":MS_start,"e":MS_end,"t":"text"}} */
+    if (!m_subtitle_user) return;
 
-    /* Parse audio tracks */
-    size_t apos = json.find("\"audio\":[");
-    if (apos != std::string::npos)
-    {
-        size_t start = json.find('[', apos);
-        size_t end   = json.find(']', start);
-        std::string arr = json.substr(start, end - start + 1);
-        size_t obj_start = 0;
-        while ((obj_start = arr.find('{', obj_start)) != std::string::npos)
-        {
-            size_t obj_end = arr.find('}', obj_start);
-            std::string obj = arr.substr(obj_start, obj_end - obj_start + 1);
-            sFfmpegAudioTrack t;
-            t.id         = (int)json_get_int(obj, "id");
-            t.pid        = (int)json_get_int(obj, "pid");
-            t.language   = json_get_str(obj, "lang");
-            t.codec      = json_get_str(obj, "codec");
-            t.channels   = (int)json_get_int(obj, "ch");
-            t.samplerate = (int)json_get_int(obj, "rate");
-            t.bitrate    = (int)json_get_int(obj, "bps");
-            m_stream_info.audio_tracks.push_back(t);
-            obj_start = obj_end + 1;
-        }
-    }
+    std::string inner = json_inner(line, "s_a", '{', '}');
+    if (inner.empty()) return;
 
-    /* Parse subtitle tracks */
-    size_t spos = json.find("\"subs\":[");
-    if (spos != std::string::npos)
-    {
-        size_t start = json.find('[', spos);
-        size_t end   = json.find(']', start);
-        std::string arr = json.substr(start, end - start + 1);
-        size_t obj_start = 0;
-        while ((obj_start = arr.find('{', obj_start)) != std::string::npos)
-        {
-            size_t obj_end = arr.find('}', obj_start);
-            std::string obj = arr.substr(obj_start, obj_end - obj_start + 1);
-            sFfmpegSubtitleTrack t;
-            t.id       = (int)json_get_int(obj, "id");
-            t.language = json_get_str(obj, "lang");
-            t.codec    = json_get_str(obj, "codec");
-            t.bitmap   = (bool)json_get_int(obj, "bitmap");
-            m_stream_info.sub_tracks.push_back(t);
-            obj_start = obj_end + 1;
-        }
-    }
+    std::string text    = json_str(inner, "t");
+    int64_t     startMs = json_int(inner, "s");
+    int64_t     endMs   = json_int(inner, "e");
 
-    if (m_current_audio_track < 0 && !m_stream_info.audio_tracks.empty())
-        m_current_audio_track = 0;
+    if (text.empty()) return;
 
-    eDebug("[serviceffmpeg] parsed %zu audio tracks, %zu subtitle tracks",
-           m_stream_info.audio_tracks.size(), m_stream_info.sub_tracks.size());
-}
-
-void eServiceFfmpeg::parseVideoInfo(const std::string &json)
-{
-    m_stream_info.video.codec       = json_get_str(json, "vcodec");
-    m_stream_info.video.width       = (int)json_get_int(json, "w");
-    m_stream_info.video.height      = (int)json_get_int(json, "h");
-    m_stream_info.video.aspect      = (int)json_get_int(json, "aspect");
-    m_stream_info.video.framerate   = (int)json_get_int(json, "fps");
-    m_stream_info.video.bitrate     = (int)json_get_int(json, "vbps");
-    m_stream_info.video.progressive = (bool)json_get_int(json, "progressive");
-}
-
-void eServiceFfmpeg::parseSubtitle(const std::string &json)
-{
-    if (!m_subtitle_user || m_current_sub_track < 0) return;
-    std::string text     = json_get_str(json, "text");
-    int64_t pts_ms       = json_get_int(json, "pts_ms");
-    int64_t duration_ms  = json_get_int(json, "dur_ms");
-    if (duration_ms <= 0) duration_ms = 5000;
-
+    /* Build ePangoSubtitlePage with a single line */
     ePangoSubtitlePage page;
-    gRGB color(0xD0, 0xD0, 0xD0);
-    page.m_elements.push_back(ePangoSubtitlePageElement(color, text.c_str()));
-    page.m_show_pts = msToPts(pts_ms);
-    page.m_timeout  = (int)duration_ms;
+    page.m_show_pts  = msToPts(startMs);
+    page.m_timeout   = (int)((endMs - startMs) / 1000);
+    if (page.m_timeout <= 0) page.m_timeout = 5;
+
+    ePangoSubtitleEntry entry;
+    entry.m_text = text;
+    page.m_entries.push_front(entry);
+
     m_subtitle_user->setPage(page);
 }
 
-/* ======================================================================
- * EPG/NowNext
- * ====================================================================== */
-void eServiceFfmpeg::updateEpgCacheNowNext()
+void eServiceFfmpeg::onSubtitleFlush(const std::string &)
 {
-    bool update = false;
-    ePtr<eServiceEvent> ptr = 0;
-    eServiceReference ref(m_ref);
-    ref.type = eServiceFactoryFfmpeg::id;
-    ref.path.clear();
-
-    if (eEPGCache::getInstance() &&
-        eEPGCache::getInstance()->lookupEventTime(ref, -1, ptr) >= 0)
-    {
-        ePtr<eServiceEvent> cur = m_event_now;
-        if (!cur || !ptr || cur->getEventId() != ptr->getEventId())
-        {
-            update = true;
-            m_event_now = ptr;
-            time_t next_time = ptr->getBeginTime() + ptr->getDuration();
-            ePtr<eServiceEvent> nxt = 0;
-            if (eEPGCache::getInstance()->lookupEventTime(ref, next_time, nxt) >= 0)
-                m_event_next = nxt;
-        }
+    /* {"s_f":{"r":0}} — subtitle track reset, clear display */
+    if (m_subtitle_user) {
+        ePangoSubtitlePage page;
+        page.m_show_pts = m_last_position;
+        page.m_timeout  = 0;
+        m_subtitle_user->setPage(page);
     }
-
-    int refresh = 60;
-    if (m_event_next)
-    {
-        time_t now = eDVBLocalTimeHandler::getInstance()->nowTime();
-        refresh = (int)(m_event_next->getBeginTime() - now) + 3;
-        if (refresh <= 0 || refresh > 60) refresh = 60;
-    }
-    m_nownext_timer->startLongTimer(refresh);
-    if (update) m_event((iPlayableService*)this, iPlayableService::evUpdatedEventInfo);
 }
 
-/* ======================================================================
- * iPlayableService implementation
- * ====================================================================== */
+void eServiceFfmpeg::onVideoInfoVc(const std::string &line)
+{
+    /* {"vc":{"id":N,"e":"H264","n":"","w":W,"h":H,"f":F,"p":P,"an":A,"ad":D}} */
+    std::string inner = json_inner(line, "vc", '{', '}');
+    if (inner.empty()) return;
+
+    m_video_info.encoding    = json_str(inner, "e");
+    m_video_info.width       = (int)json_int(inner, "w");
+    m_video_info.height      = (int)json_int(inner, "h");
+    m_video_info.framerate   = (int)json_int(inner, "f");
+    m_video_info.progressive = (int)json_int(inner, "p");
+    m_video_info.aspect_num  = (int)json_int(inner, "an");
+    m_video_info.aspect_den  = (int)json_int(inner, "ad");
+
+    eDebug("[serviceffmpeg] vc: %s %dx%d fps=%d progressive=%d",
+        m_video_info.encoding.c_str(),
+        m_video_info.width, m_video_info.height,
+        m_video_info.framerate, m_video_info.progressive);
+
+    m_event((iPlayableService*)this, iPlayableService::evVideoSizeChanged);
+}
+
+void eServiceFfmpeg::onVideoInfoVe(const std::string &line)
+{
+    /* {"v_e":{"w":W,"h":H,"a":A,"f":F,"p":P}} — spontaneous from linuxdvb_mipsel
+     * Only update fields that v_e provides; keep encoding from vc */
+    std::string inner = json_inner(line, "v_e", '{', '}');
+    if (inner.empty()) return;
+
+    int w = (int)json_int(inner, "w");
+    int h = (int)json_int(inner, "h");
+    int f = (int)json_int(inner, "f");
+    int p = (int)json_int(inner, "p");
+    int a = (int)json_int(inner, "a");
+
+    bool changed = (w != m_video_info.width || h != m_video_info.height);
+
+    if (w > 0) m_video_info.width       = w;
+    if (h > 0) m_video_info.height      = h;
+    if (f > 0) m_video_info.framerate   = f;
+    m_video_info.progressive  = p;
+    m_video_info.aspect_ratio = a;
+
+    eDebug("[serviceffmpeg] v_e: %dx%d fps=%d aspect=%d progressive=%d",
+        m_video_info.width, m_video_info.height,
+        m_video_info.framerate, a, p);
+
+    if (changed)
+        m_event((iPlayableService*)this, iPlayableService::evVideoSizeChanged);
+}
+
+void eServiceFfmpeg::onFfError(const std::string &line)
+{
+    /* {"FF_ERROR":{"msg":"No such file or directory","code":-2}} */
+    std::string inner = json_inner(line, "FF_ERROR", '{', '}');
+    std::string msg   = json_str(inner, "msg");
+    int         code  = (int)json_int(inner, "code");
+    eDebug("[serviceffmpeg] FF_ERROR code=%d msg=%s", code, msg.c_str());
+    m_error_code = code ? code : -1;
+    m_state = stError;
+    m_event((iPlayableService*)this, iPlayableService::evUser + 12);
+}
+
+/* =========================================================================
+ * Track parsers
+ * ======================================================================= */
+void eServiceFfmpeg::parseAudioList(const std::string &arr)
+{
+    m_audio_tracks.clear();
+    size_t pos = 0;
+    while ((pos = arr.find('{', pos)) != std::string::npos) {
+        size_t e = arr.find('}', pos);
+        if (e == std::string::npos) break;
+        std::string item = arr.substr(pos, e - pos + 1);
+        sFfmpegAudioTrack t;
+        t.id       = (int)json_int(item, "id");
+        t.encoding = json_str(item, "e");
+        t.name     = json_str(item, "n");
+        m_audio_tracks.push_back(t);
+        pos = e + 1;
+    }
+    eDebug("[serviceffmpeg] audio tracks: %zu", m_audio_tracks.size());
+}
+
+void eServiceFfmpeg::parseSubtitleList(const std::string &arr)
+{
+    m_sub_tracks.clear();
+    size_t pos = 0;
+    while ((pos = arr.find('{', pos)) != std::string::npos) {
+        size_t e = arr.find('}', pos);
+        if (e == std::string::npos) break;
+        std::string item = arr.substr(pos, e - pos + 1);
+        sFfmpegSubtitleTrack t;
+        t.id       = (int)json_int(item, "id");
+        t.encoding = json_str(item, "e");
+        t.name     = json_str(item, "n");
+        m_sub_tracks.push_back(t);
+        pos = e + 1;
+    }
+    eDebug("[serviceffmpeg] subtitle tracks: %zu", m_sub_tracks.size());
+}
+
+/* =========================================================================
+ * iPlayableService
+ * ======================================================================= */
 RESULT eServiceFfmpeg::connectEvent(
     const sigc::slot<void(iPlayableService*,int)> &event,
     ePtr<eConnection> &connection)
@@ -764,338 +733,46 @@ RESULT eServiceFfmpeg::connectEvent(
 
 RESULT eServiceFfmpeg::start()
 {
-    ASSERT(m_state == stIdle);
-    eDebug("[serviceffmpeg] start %s", m_ref.path.c_str());
-
-    if (!launchPlayer())
-    {
+    if (m_state != stIdle) return -1;
+    if (!launchPlayer()) {
         m_state = stError;
-        m_error_code    = SFMP_ERR_OPEN_FAILED;
-        m_error_message = "failed to launch ffmpeg-player";
         m_event((iPlayableService*)this, iPlayableService::evUser + 12);
         return -1;
     }
-
-    /* Send initial configuration to player */
-    if (!m_useragent.empty())
-        ipcSend(SFMP_CMD_SET_USERAGENT,
-                json_str("ua", m_useragent));
-    if (!m_extra_headers.empty())
-        ipcSend(SFMP_CMD_SET_HEADERS,
-                json_str("headers", m_extra_headers));
-
-    ipcSend(SFMP_CMD_PLAY);
     return 0;
 }
 
 RESULT eServiceFfmpeg::stop()
 {
-    if (m_state == stStopped) return -1;
-    eDebug("[serviceffmpeg] stop");
-    if (m_ipc_fd >= 0) ipcSend(SFMP_CMD_STOP);
-    killPlayer();
+    if (m_state == stIdle || m_state == stStopped) return 0;
+    eDebug("[serviceffmpeg] stop()");
+    stopPlayer();
     m_state = stStopped;
-    m_nownext_timer->stop();
     return 0;
 }
 
-RESULT eServiceFfmpeg::pause(ePtr<iPauseableService> &ptr)
-{
-    ptr = this; return 0;
-}
-
-RESULT eServiceFfmpeg::seek(ePtr<iSeekableService> &ptr)
-{
-    ptr = this; return 0;
-}
-
-RESULT eServiceFfmpeg::audioTracks(ePtr<iAudioTrackSelection> &ptr)
-{
-    ptr = this; return 0;
-}
-
-RESULT eServiceFfmpeg::subtitle(ePtr<iSubtitleOutput> &ptr)
-{
-    ptr = this; return 0;
-}
-
-RESULT eServiceFfmpeg::info(ePtr<iServiceInformation> &ptr)
-{
-    ptr = this; return 0;
-}
+RESULT eServiceFfmpeg::pause(ePtr<iPauseableService> &ptr) { ptr = this; return 0; }
+RESULT eServiceFfmpeg::seek(ePtr<iSeekableService> &ptr)   { ptr = this; return 0; }
+RESULT eServiceFfmpeg::audioTracks(ePtr<iAudioTrackSelection> &ptr) { ptr=this; return 0; }
+RESULT eServiceFfmpeg::subtitle(ePtr<iSubtitleOutput> &ptr)         { ptr=this; return 0; }
+RESULT eServiceFfmpeg::info(ePtr<iServiceInformation> &ptr)         { ptr=this; return 0; }
 
 RESULT eServiceFfmpeg::setSlowMotion(int ratio)
 {
-    if (!ratio) return 0;
-    eDebug("[serviceffmpeg] slowmotion ratio=%d", ratio);
-    return ipcSend(SFMP_CMD_SET_SPEED,
-                   json_int("speed", ratio > 0 ? 1 : -1)) ? 0 : -1;
+    char cmd[32]; snprintf(cmd, sizeof(cmd), "m%d\n", ratio);
+    sendCmd(cmd); return 0;
 }
 
 RESULT eServiceFfmpeg::setFastForward(int ratio)
 {
-    eDebug("[serviceffmpeg] fastforward ratio=%d", ratio);
-    m_trickmode_speed = ratio;
-    return ipcSend(SFMP_CMD_SET_SPEED,
-                   json_int("speed", ratio)) ? 0 : -1;
-}
-
-/* ======================================================================
- * iPauseableService
- * ====================================================================== */
-RESULT eServiceFfmpeg::pause()
-{
-    if (m_state != stRunning) return -1;
-    eDebug("[serviceffmpeg] pause");
-    m_paused = true;
-    m_state  = stPaused;
-    return ipcSend(SFMP_CMD_PAUSE) ? 0 : -1;
-}
-
-RESULT eServiceFfmpeg::unpause()
-{
-    if (m_state != stPaused) return -1;
-    eDebug("[serviceffmpeg] unpause");
-    m_paused = false;
-    m_state  = stRunning;
-    return ipcSend(SFMP_CMD_RESUME) ? 0 : -1;
-}
-
-/* ======================================================================
- * iSeekableService
- * ====================================================================== */
-RESULT eServiceFfmpeg::getLength(pts_t &len)
-{
-    len = m_duration;
-    return (m_duration > 0) ? 0 : -1;
-}
-
-RESULT eServiceFfmpeg::seekTo(pts_t to)
-{
-    int64_t ms = ptsToMs(to);
-    eDebug("[serviceffmpeg] seekTo %lld ms", (long long)ms);
-    return ipcSend(SFMP_CMD_SEEK, json_int("pos_ms", ms)) ? 0 : -1;
-}
-
-RESULT eServiceFfmpeg::seekRelative(int direction, pts_t to)
-{
-    int64_t delta_ms = ptsToMs(to) * direction;
-    eDebug("[serviceffmpeg] seekRelative %lld ms", (long long)delta_ms);
-    return ipcSend(SFMP_CMD_SEEK_RELATIVE, json_int("delta_ms", delta_ms)) ? 0 : -1;
-}
-
-RESULT eServiceFfmpeg::getPlayPosition(pts_t &pos)
-{
-    pos = m_last_position;
+    if (ratio < 0)  { char cmd[32]; snprintf(cmd,sizeof(cmd),"b%d\n",-ratio); sendCmd(cmd); }
+    else if (ratio > 1) { char cmd[32]; snprintf(cmd,sizeof(cmd),"f%d\n",ratio); sendCmd(cmd); }
+    else sendCmd("c\n");
     return 0;
 }
 
-RESULT eServiceFfmpeg::setTrickmode(int trick)
-{
-    return setFastForward(trick);
-}
-
-RESULT eServiceFfmpeg::isCurrentlySeekable()
-{
-    return m_seekable ? 1 : 0;
-}
-
-/* ======================================================================
- * iAudioTrackSelection
- * ====================================================================== */
-int eServiceFfmpeg::getNumberOfTracks()
-{
-    return (int)m_stream_info.audio_tracks.size();
-}
-
-RESULT eServiceFfmpeg::selectTrack(unsigned int i)
-{
-    if (i >= m_stream_info.audio_tracks.size()) return -1;
-    m_current_audio_track = (int)i;
-    int stream_id = m_stream_info.audio_tracks[i].id;
-    eDebug("[serviceffmpeg] select audio track %u (stream_id=%d)", i, stream_id);
-    return ipcSend(SFMP_CMD_SET_AUDIO, json_int("id", stream_id)) ? 0 : -1;
-}
-
-RESULT eServiceFfmpeg::getTrackInfo(struct iAudioTrackInfo &info, unsigned int n)
-{
-    if (n >= m_stream_info.audio_tracks.size()) return -1;
-    const sFfmpegAudioTrack &t = m_stream_info.audio_tracks[n];
-    info.m_language    = t.language;
-    info.m_description = t.codec;
-    return 0;
-}
-
-int eServiceFfmpeg::getCurrentTrack()
-{
-    return m_current_audio_track;
-}
-
-/* ======================================================================
- * iSubtitleOutput
- * ====================================================================== */
-RESULT eServiceFfmpeg::enableSubtitles(iSubtitleUser *parent, SubtitleTrack &track)
-{
-    disableSubtitles();
-    m_subtitle_user = parent;
-
-    /* Find the track by language/type */
-    int stream_id = -1;
-    for (size_t i = 0; i < m_stream_info.sub_tracks.size(); i++)
-    {
-        if (m_stream_info.sub_tracks[i].language == track.language_code ||
-            (int)i == track.pid)
-        {
-            stream_id = m_stream_info.sub_tracks[i].id;
-            m_current_sub_track = (int)i;
-            break;
-        }
-    }
-    if (stream_id < 0)
-    {
-        eDebug("[serviceffmpeg] subtitle track not found");
-        return -1;
-    }
-
-    
-    
-
-    eDebug("[serviceffmpeg] enable subtitles stream_id=%d", stream_id);
-    ipcSend(SFMP_CMD_SET_SUBTITLE, json_int("id", stream_id));
-    m_cached_sub_track = m_current_sub_track;
-    return 0;
-}
-
-RESULT eServiceFfmpeg::disableSubtitles()
-{
-    m_subtitle_user = NULL;
-    m_current_sub_track = -1;
-    ipcSend(SFMP_CMD_SET_SUBTITLE, json_int("id", -1));
-    return 0;
-}
-
-RESULT eServiceFfmpeg::getCachedSubtitle(SubtitleTrack &track)
-{
-    if (m_cached_sub_track < 0 ||
-        m_cached_sub_track >= (int)m_stream_info.sub_tracks.size())
-        return -1;
-    const sFfmpegSubtitleTrack &t = m_stream_info.sub_tracks[m_cached_sub_track];
-    track.language_code = t.language;
-    track.pid           = t.id;
-    track.type          = t.bitmap ? 1 : 0;
-    return 0;
-}
-
-RESULT eServiceFfmpeg::getSubtitleList(std::vector<SubtitleTrack> &list)
-{
-    list.clear();
-    for (size_t i = 0; i < m_stream_info.sub_tracks.size(); i++)
-    {
-        const sFfmpegSubtitleTrack &t = m_stream_info.sub_tracks[i];
-        SubtitleTrack st;
-        st.language_code = t.language;
-        st.pid           = t.id;
-        st.type          = t.bitmap ? 1 : 0;
-        list.push_back(st);
-    }
-    return 0;
-}
-
-/* ======================================================================
- * iRecordableService
- * ====================================================================== */
-/* record() was removed from iRecordableService in scarthgap.
- * Use prepare(filename) + start() instead (stub implementations below).
- * This helper is kept for internal use. */
-
-RESULT eServiceFfmpeg::stopRecord()
-{
-    if (!m_recording) return -1;
-    m_recording = false;
-    return ipcSend(SFMP_CMD_RECORD_STOP) ? 0 : -1;
-}
-
-RESULT eServiceFfmpeg::frontendInfo(ePtr<iFrontendInformation> &ptr)
-{
-    ptr = 0; return -1;
-}
-
-RESULT eServiceFfmpeg::connectEvent(
-    const sigc::slot<void(iRecordableService*,int)> &event,
-    ePtr<eConnection> &connection)
-{
-    connection = new eConnection((iRecordableService*)this, m_rec_event.connect(event));
-    return 0;
-}
-
-RESULT eServiceFfmpeg::getError(int &error)
-{
-    error = m_error_code; return 0;
-}
-
-RESULT eServiceFfmpeg::subServices(ePtr<iSubserviceList> &ptr)
-{
-    ptr = 0; return -1;
-}
-
-/* ======================================================================
- * iServiceInformation
- * ====================================================================== */
-RESULT eServiceFfmpeg::getName(std::string &name)
-{
-    if (!m_stream_info.title.empty())    { name = m_stream_info.title; return 0; }
-    if (m_ref.name.length())             { name = m_ref.name; return 0; }
-    size_t last = m_ref.path.rfind('/');
-    name = (last != std::string::npos) ? m_ref.path.substr(last + 1) : m_ref.path;
-    return 0;
-}
-
-int eServiceFfmpeg::getInfo(int w)
-{
-    switch (w)
-    {
-    case iServiceInformation::sVideoWidth:      return m_width;
-    case iServiceInformation::sVideoHeight:     return m_height;
-    case iServiceInformation::sAspect:          return m_aspect;
-    case iServiceInformation::sFrameRate:       return m_framerate;
-    case iServiceInformation::sProgressive:     return m_progressive ? 1 : 0;
-    case iServiceInformation::sCurrentTitle:    return m_current_audio_track;
-    case iServiceInformation::sTotalTitles:     return (int)m_stream_info.audio_tracks.size();
-    case iServiceInformation::sBuffer:          return m_buffer_percentage;
-    }
-    return iServiceInformation::resNA;
-}
-
-std::string eServiceFfmpeg::getInfoString(int w)
-{
-    switch (w)
-    {
-    case iServiceInformation::sServiceref:  return m_ref.toString();
-    case iServiceInformation::sUser + 12:   return m_error_message;
-    }
-    if (!m_stream_info.audio_tracks.empty() && m_current_audio_track >= 0 &&
-        m_current_audio_track < (int)m_stream_info.audio_tracks.size())
-    {
-        if (w == (iServiceInformation::sUser + 30))
-            return m_stream_info.audio_tracks[m_current_audio_track].codec;
-    }
-    if (w == (iServiceInformation::sUser + 31)) return m_stream_info.video.codec;
-    return "";
-}
-
-ePtr<iServiceInfoContainer> eServiceFfmpeg::getInfoObject(int w)
-{
-    (void)w;
-    return NULL;
-}
-
-
-/* ======================================================================
- * Stub implementations for mandatory scarthgap virtuals
- * ====================================================================== */
-
-/* iPlayableService stubs */
-RESULT eServiceFfmpeg::setTarget(int, bool)             { return -1; }
+/* scarthgap mandatory stubs */
+RESULT eServiceFfmpeg::setTarget(int, bool)                          { return -1; }
 RESULT eServiceFfmpeg::audioChannel(ePtr<iAudioChannelSelection> &p) { p=0; return -1; }
 RESULT eServiceFfmpeg::timeshift(ePtr<iTimeshiftService> &p)         { p=0; return -1; }
 RESULT eServiceFfmpeg::tap(ePtr<iTapService> &p)                     { p=0; return -1; }
@@ -1105,32 +782,262 @@ RESULT eServiceFfmpeg::rdsDecoder(ePtr<iRdsDecoder> &p)              { p=0; retu
 RESULT eServiceFfmpeg::stream(ePtr<iStreamableService> &p)           { p=0; return -1; }
 RESULT eServiceFfmpeg::streamed(ePtr<iStreamedService> &p)           { p=0; return -1; }
 RESULT eServiceFfmpeg::keys(ePtr<iServiceKeys> &p)                   { p=0; return -1; }
-void   eServiceFfmpeg::setQpipMode(bool, bool)                       { }
+void   eServiceFfmpeg::setQpipMode(bool, bool)                       {}
 
-/* iRecordableService stubs */
-RESULT eServiceFfmpeg::prepare(const char *filename, time_t, time_t, int,
-                                const char*, const char*, const char*,
-                                bool, bool, int)
+/* =========================================================================
+ * iPauseableService
+ * ======================================================================= */
+RESULT eServiceFfmpeg::pause()   { sendCmd("p\n"); return 0; }
+RESULT eServiceFfmpeg::unpause() { sendCmd("c\n"); return 0; }
+
+/* =========================================================================
+ * iSeekableService
+ * ======================================================================= */
+RESULT eServiceFfmpeg::getLength(pts_t &len)
 {
-    m_record_path = filename ? filename : "";
+    len = m_duration;
+    if (m_duration == 0 && m_state == stRunning)
+        sendCmd("l\n");  /* async refresh */
     return 0;
 }
-RESULT eServiceFfmpeg::prepareStreaming(bool, bool) { return -1; }
-RESULT eServiceFfmpeg::start(bool simulate)
-{
-    /* iRecordableService::start - triggers recording after prepare() */
-    if (simulate) return 0;
-    if (m_record_path.empty()) return -1;
-    if (m_recording) return -1;
-    eDebug("[serviceffmpeg] recording start: %s", m_record_path.c_str());
-    m_recording = true;
-    return ipcSend(SFMP_CMD_RECORD_START, json_str("path", m_record_path)) ? 0 : -1;
-}
-RESULT eServiceFfmpeg::record(ePtr<iStreamableService> &p) { p=0; return -1; }
-RESULT eServiceFfmpeg::getFilenameExtension(std::string &ext) { ext = "ts"; return 0; }
 
-/* ======================================================================
- * Module registration
- * ====================================================================== */
+RESULT eServiceFfmpeg::seekTo(pts_t to)
+{
+    /* gf = force-seek absolute */
+    char cmd[64];
+    snprintf(cmd, sizeof(cmd), "gf%lld\n", (long long)ptsToSec(to));
+    sendCmd(cmd);
+    return 0;
+}
+
+RESULT eServiceFfmpeg::seekRelative(int direction, pts_t to)
+{
+    char cmd[64];
+    snprintf(cmd, sizeof(cmd), "kf%lld\n",
+             (long long)(ptsToSec(to) * direction));
+    sendCmd(cmd);
+    return 0;
+}
+
+RESULT eServiceFfmpeg::getPlayPosition(pts_t &pos)
+{
+    pos = m_last_position;
+    if (m_state == stRunning)
+        sendCmd("j\n");  /* async refresh */
+    return 0;
+}
+
+RESULT eServiceFfmpeg::setTrickmode(int trick)  { return setFastForward(trick); }
+
+RESULT eServiceFfmpeg::isCurrentlySeekable()
+{
+    /* 1=fwd seekable, 2=bwd seekable, 3=both */
+    return m_seekable ? 3 : 0;
+}
+
+/* =========================================================================
+ * iAudioTrackSelection
+ * ======================================================================= */
+int eServiceFfmpeg::getNumberOfTracks()    { return (int)m_audio_tracks.size(); }
+int eServiceFfmpeg::getCurrentTrack()      { return m_current_audio_idx; }
+
+RESULT eServiceFfmpeg::selectTrack(unsigned int i)
+{
+    if (i >= m_audio_tracks.size()) return -1;
+    char cmd[32]; snprintf(cmd, sizeof(cmd), "ai%u\n", i);
+    sendCmd(cmd);
+    m_current_audio_idx = (int)i;
+    return 0;
+}
+
+RESULT eServiceFfmpeg::getTrackInfo(struct iAudioTrackInfo &info, unsigned int n)
+{
+    if (n >= m_audio_tracks.size()) return -1;
+    const sFfmpegAudioTrack &t = m_audio_tracks[n];
+    info.m_language    = t.name.empty() ? t.encoding : t.name;
+    info.m_description = t.encoding;
+    return 0;
+}
+
+/* =========================================================================
+ * iSubtitleOutput
+ * ======================================================================= */
+RESULT eServiceFfmpeg::enableSubtitles(iSubtitleUser *parent, SubtitleTrack &track)
+{
+    disableSubtitles();
+    m_subtitle_user = parent;
+
+    /* Match track by language_code or pid (= ep3 track id) */
+    for (int i = 0; i < (int)m_sub_tracks.size(); ++i) {
+        const sFfmpegSubtitleTrack &t = m_sub_tracks[i];
+        if (t.name == track.language_code || t.id == track.pid) {
+            m_current_sub_idx = i;
+            m_cached_sub_idx  = i;
+            char cmd[32]; snprintf(cmd, sizeof(cmd), "si%d\n", i);
+            sendCmd(cmd);
+            return 0;
+        }
+    }
+    return -1;
+}
+
+RESULT eServiceFfmpeg::disableSubtitles()
+{
+    if (m_current_sub_idx >= 0) {
+        sendCmd("si-1\n");
+        m_current_sub_idx = -1;
+    }
+    m_subtitle_user = NULL;
+    return 0;
+}
+
+RESULT eServiceFfmpeg::getCachedSubtitle(SubtitleTrack &track)
+{
+    if (m_cached_sub_idx < 0 ||
+        m_cached_sub_idx >= (int)m_sub_tracks.size()) return -1;
+    const sFfmpegSubtitleTrack &t = m_sub_tracks[m_cached_sub_idx];
+    track.language_code = t.name.empty() ? t.encoding : t.name;
+    track.pid           = t.id;
+    track.type          = 0;
+    return 0;
+}
+
+RESULT eServiceFfmpeg::getSubtitleList(std::vector<SubtitleTrack> &list)
+{
+    list.clear();
+    for (const auto &t : m_sub_tracks) {
+        SubtitleTrack st;
+        st.language_code = t.name.empty() ? t.encoding : t.name;
+        st.pid           = t.id;
+        st.type          = 0;
+        list.push_back(st);
+    }
+    return 0;
+}
+
+/* =========================================================================
+ * iServiceInformation
+ * ======================================================================= */
+RESULT eServiceFfmpeg::getName(std::string &name)
+{
+    if (!m_ref.name.empty()) { name = m_ref.name; return 0; }
+    size_t sl = m_ref.path.rfind('/');
+    name = (sl != std::string::npos) ? m_ref.path.substr(sl+1) : m_ref.path;
+    return 0;
+}
+
+int eServiceFfmpeg::getInfo(int w)
+{
+    switch (w) {
+    case iServiceInformation::sVideoWidth:
+        return m_video_info.width  > 0 ? m_video_info.width  : iServiceInformation::resNA;
+    case iServiceInformation::sVideoHeight:
+        return m_video_info.height > 0 ? m_video_info.height : iServiceInformation::resNA;
+    case iServiceInformation::sFrameRate:
+        return m_video_info.framerate > 0 ? m_video_info.framerate : iServiceInformation::resNA;
+    case iServiceInformation::sProgressive:
+        return m_video_info.progressive;
+    case iServiceInformation::sAspect: {
+        /* Prefer raw DVB aspect value from v_e if available */
+        if (m_video_info.aspect_ratio > 0) return m_video_info.aspect_ratio;
+        /* Fall back to aspect_num/den from vc */
+        if (m_video_info.aspect_den > 0) {
+            float r = (float)m_video_info.aspect_num / m_video_info.aspect_den;
+            if (r > 2.0f)  return 3;  /* 2.21:1 */
+            if (r > 1.5f)  return 2;  /* 16:9   */
+            return 1;                  /* 4:3    */
+        }
+        return iServiceInformation::resNA;
+    }
+    case iServiceInformation::sCurrentTitle:
+        return m_current_audio_idx;
+    case iServiceInformation::sTotalTitles:
+        return (int)m_audio_tracks.size();
+    }
+    return iServiceInformation::resNA;
+}
+
+std::string eServiceFfmpeg::getInfoString(int w)
+{
+    switch (w) {
+    case iServiceInformation::sServiceref:
+        return m_ref.toString();
+    default:
+        /* Audio codec: sUser+30 */
+        if (w == iServiceInformation::sUser + 30 &&
+            m_current_audio_idx >= 0 &&
+            m_current_audio_idx < (int)m_audio_tracks.size())
+            return m_audio_tracks[m_current_audio_idx].encoding;
+        /* Video codec: sUser+31 */
+        if (w == iServiceInformation::sUser + 31)
+            return m_video_info.encoding;
+    }
+    return "";
+}
+
+ePtr<iServiceInfoContainer> eServiceFfmpeg::getInfoObject(int) { return NULL; }
+
+/* =========================================================================
+ * iRecordableService  (stubs — recording not supported via exteplayer3)
+ * ======================================================================= */
+RESULT eServiceFfmpeg::connectEvent(
+    const sigc::slot<void(iRecordableService*,int)> &event,
+    ePtr<eConnection> &connection)
+{
+    connection = new eConnection((iRecordableService*)this,
+                                 m_rec_event.connect(event));
+    return 0;
+}
+
+RESULT eServiceFfmpeg::getError(int &error)              { error = m_error_code; return 0; }
+RESULT eServiceFfmpeg::subServices(ePtr<iSubserviceList> &p)  { p=0; return -1; }
+RESULT eServiceFfmpeg::frontendInfo(ePtr<iFrontendInformation> &p) { p=0; return -1; }
+RESULT eServiceFfmpeg::prepare(const char*,time_t,time_t,int,
+    const char*,const char*,const char*,bool,bool,int)   { return -1; }
+RESULT eServiceFfmpeg::prepareStreaming(bool,bool)        { return -1; }
+RESULT eServiceFfmpeg::start(bool simulate)              { return simulate ? 0 : -1; }
+RESULT eServiceFfmpeg::record(ePtr<iStreamableService> &p){ p=0; return -1; }
+RESULT eServiceFfmpeg::getFilenameExtension(std::string &ext) { ext="ts"; return 0; }
+RESULT eServiceFfmpeg::stopRecord()                      { return -1; }
+
+/* =========================================================================
+ * EPG  NowNext
+ * ======================================================================= */
+void eServiceFfmpeg::updateEpgCacheNowNext()
+{
+    bool update = false;
+    time_t now  = eDVBLocalTimeHandler::getInstance()->nowTime();
+    ePtr<eServiceEvent> cur, nxt;
+
+    if (eEPGCache::getInstance()->lookupEventTime(m_ref, now, cur) >= 0) {
+        if (!m_event_now ||
+            m_event_now->getEventId() != cur->getEventId()) {
+            m_event_now = cur;
+            update = true;
+        }
+    }
+    if (eEPGCache::getInstance()->lookupEventTime(m_ref, now, nxt, 1) >= 0) {
+        if (!m_event_next ||
+            m_event_next->getEventId() != nxt->getEventId()) {
+            m_event_next = nxt;
+            update = true;
+        }
+    }
+
+    int refresh = 60;
+    if (m_event_next) {
+        int r = (int)(m_event_next->getBeginTime() - now) + 3;
+        if (r > 0) refresh = r;
+    }
+    m_nownext_timer->startLongTimer(refresh);
+
+    if (update)
+        m_event((iPlayableService*)this,
+                iPlayableService::evUpdatedEventInfo);
+}
+
+/* =========================================================================
+ * Module init
+ * ======================================================================= */
 eAutoInitPtr<eServiceFactoryFfmpeg> init_eServiceFactoryFfmpeg(
     eAutoInitNumbers::service + 1, "eServiceFactoryFfmpeg");
