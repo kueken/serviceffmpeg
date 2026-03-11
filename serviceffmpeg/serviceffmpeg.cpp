@@ -545,7 +545,9 @@ void eServiceFfmpeg::onPlaybackPlay(const std::string &line)
 {
     if (json_int(line, "sts") == 0) {
         m_state = stRunning;
-        m_event((iPlayableService*)this, iPlayableService::evStart);
+        /* evStart already fired in start() — now signal updated info
+         * so the mediaplayer refreshes track lists, duration etc. */
+        m_event((iPlayableService*)this, iPlayableService::evUpdatedInfo);
         m_nownext_timer->startLongTimer(3);
         /* Request track lists and initial length */
         sendCmd("al\n");
@@ -773,6 +775,13 @@ RESULT eServiceFfmpeg::connectEvent(
 RESULT eServiceFfmpeg::start()
 {
     if (m_state != stIdle) return -1;
+
+    /* Signal the mediaplayer that we have started — it waits for these
+     * two events before transitioning to "playing" state.
+     * serviceapp fires them unconditionally at the top of start(). */
+    m_event((iPlayableService*)this, iPlayableService::evUpdatedEventInfo);
+    m_event((iPlayableService*)this, iPlayableService::evStart);
+
     if (!launchPlayer()) {
         m_state = stError;
         m_event((iPlayableService*)this, iPlayableService::evUser + 12);
