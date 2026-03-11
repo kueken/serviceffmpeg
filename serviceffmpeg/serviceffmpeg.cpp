@@ -377,12 +377,20 @@ void eServiceFfmpeg::stopPlayer()
 {
     if (m_player_pid <= 0) return;
 
-    /* 1. polite: send 'q' command via stdin */
-    sendCmd("q\n");
+    pid_t pid = m_player_pid;
+    m_player_pid = -1;
 
-    /* 2. standard ep3 terminate mechanism */
+    /* Detach notifier and close pipes first so no more callbacks fire */
+    m_sn_read = NULL;
+    if (m_stdin_fd  >= 0) { close(m_stdin_fd);  m_stdin_fd  = -1; }
+    if (m_stderr_fd >= 0) { close(m_stderr_fd); m_stderr_fd = -1; }
+
+    /* Send polite stop via terminate socket (non-blocking connect) */
     int sock = ::socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock >= 0) {
+        /* Set non-blocking so connect() never hangs */
+        int flags = fcntl(sock, F_GETFL, 0);
+        fcntl(sock, F_SETFL, flags | O_NONBLOCK);
         struct sockaddr_un addr;
         memset(&addr, 0, sizeof(addr));
         addr.sun_family = AF_UNIX;
@@ -392,18 +400,21 @@ void eServiceFfmpeg::stopPlayer()
         ::close(sock);
     }
 
-    /* 3. wait up to 300ms then SIGKILL */
-    usleep(300000);
-    int status;
-    if (waitpid(m_player_pid, &status, WNOHANG) == 0) {
-        kill(m_player_pid, SIGKILL);
-        waitpid(m_player_pid, &status, 0);
-    }
-    m_player_pid = -1;
+    /* SIGTERM first, then SIGKILL after reaping — fully non-blocking */
+    kill(pid, SIGTERM);
 
-    m_sn_read = NULL;
-    if (m_stdin_fd  >= 0) { close(m_stdin_fd);  m_stdin_fd  = -1; }
-    if (m_stderr_fd >= 0) { close(m_stderr_fd); m_stderr_fd = -1; }
+    /* Reap asynchronously: WNOHANG loop via already-running E2 child reaper,
+     * or just SIGKILL + WNOHANG — either way we never block the mainloop */
+    int status;
+    if (waitpid(pid, &status, WNOHANG) == 0) {
+        /* Not dead yet — SIGKILL and detach; kernel will reap as zombie
+         * which is cleaned up when E2 itself exits or via SIGCHLD handler */
+        kill(pid, SIGKILL);
+        /* Non-blocking final attempt */
+        waitpid(pid, &status, WNOHANG);
+    }
+
+    eDebug("[serviceffmpeg] stopPlayer pid=%d done", (int)pid);
 }
 
 void eServiceFfmpeg::sendCmd(const char *cmd)
@@ -739,8 +750,11 @@ RESULT eServiceFfmpeg::stop()
 {
     if (m_state == stIdle || m_state == stStopped) return 0;
     eDebug("[serviceffmpeg] stop()");
-    stopPlayer();
     m_state = stStopped;
+    /* Fire evStopped BEFORE killing player so mediaplayer can proceed
+     * with UI cleanup immediately without waiting for process exit */
+    m_event((iPlayableService*)this, iPlayableService::evStopped);
+    stopPlayer();
     return 0;
 }
 
