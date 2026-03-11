@@ -69,10 +69,14 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+/* DVB video ioctls needed to restore OSD after exteplayer3 */
+#include <linux/dvb/video.h>
 
 #ifndef EXTEPLAYER3_BIN
 #define EXTEPLAYER3_BIN "/usr/bin/exteplayer3"
@@ -416,6 +420,28 @@ void eServiceFfmpeg::stopPlayer()
     }
 
     eDebug("[serviceffmpeg] stopPlayer pid=%d done", (int)pid);
+
+    /* Restore OSD / Enigma2 GUI layer after exteplayer3.
+     *
+     * On BCM7xxx the hardware video layer sits on top of the OSD.
+     * exteplayer3 activates it via VIDEO_PLAY but never calls VIDEO_SET_BLANK
+     * on exit, so the last video frame stays visible and blocks the E2 GUI.
+     *
+     * We replicate what LinuxDvbStop() does plus add VIDEO_SET_BLANK so the
+     * hardware compositor hands control back to the framebuffer/OSD layer.
+     */
+    int vfd = open("/dev/dvb/adapter0/video0", O_RDWR | O_NONBLOCK);
+    if (vfd >= 0) {
+        ioctl(vfd, VIDEO_SELECT_SOURCE, VIDEO_SOURCE_DEMUX);
+        ioctl(vfd, VIDEO_STOP);
+        /* Blank = 1: show still picture / hand layer back to OSD */
+        int blank = 1;
+        ioctl(vfd, VIDEO_SET_BLANK, &blank);
+        close(vfd);
+        eDebug("[serviceffmpeg] OSD restore: VIDEO_STOP + VIDEO_SET_BLANK done");
+    } else {
+        eDebug("[serviceffmpeg] OSD restore: cannot open video0: %s", strerror(errno));
+    }
 }
 
 void eServiceFfmpeg::sendCmd(const char *cmd)
