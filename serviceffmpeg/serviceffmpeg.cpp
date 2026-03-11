@@ -640,12 +640,12 @@ void eServiceFfmpeg::onSubtitleCurrent(const std::string &line)
     if (inner.empty()) return;
     int tid = (int)json_int(inner, "id");
     m_current_sub_idx = -1;
-    for (int i = 0; i < (int)m_subtitle_tracks.size(); ++i) {
-        if (m_subtitle_tracks[i].id == tid) { m_current_sub_idx = i; break; }
+    for (int i = 0; i < (int)m_sub_tracks.size(); ++i) {
+        if (m_sub_tracks[i].id == tid) { m_current_sub_idx = i; break; }
     }
 }
 
-
+void eServiceFfmpeg::onSubtitleData(const std::string &line)
 {
     /* {"s_a":{"id":N,"s":MS_start,"e":MS_end,"t":"text"}} */
     if (!m_subtitle_user || m_current_sub_idx < 0) return;
