@@ -44,7 +44,6 @@ AC_ARG_WITH([exteplayer3],
     [ep3_bin="${bindir}/exteplayer3"])
 AC_DEFINE_UNQUOTED([EXTEPLAYER3_BIN], ["$ep3_bin"],
     [Absolute path to exteplayer3 binary])
-AC_DEFINE([DEBUG])
 
 CXXFLAGS="$CXXFLAGS -Wall -Wno-deprecated -std=c++17"
 
