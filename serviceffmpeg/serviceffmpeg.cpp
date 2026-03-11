@@ -361,11 +361,12 @@ bool eServiceFfmpeg::launchPlayer()
     m_stdin_fd  = stdin_pipe[1];
     m_stderr_fd = stderr_pipe[0];
 
-    /* Non-blocking read on stderr */
+    /* Non-blocking read on stderr — watch both data and hangup */
     int flags = fcntl(m_stderr_fd, F_GETFL, 0);
     fcntl(m_stderr_fd, F_SETFL, flags | O_NONBLOCK);
 
-    m_sn_read = eSocketNotifier::create(eApp, m_stderr_fd, eSocketNotifier::Read);
+    m_sn_read = eSocketNotifier::create(eApp, m_stderr_fd,
+        eSocketNotifier::Read | eSocketNotifier::Hungup);
     CONNECT(m_sn_read->activated, eServiceFfmpeg::onStderrData);
 
     m_state = stRunning;
@@ -444,11 +445,18 @@ void eServiceFfmpeg::onStderrData(int fd)
     char buf[4096];
     ssize_t n = read(fd, buf, sizeof(buf)-1);
     if (n <= 0) {
-        /* EOF: exteplayer3 exited — treat as end-of-track */
-        eDebug("[serviceffmpeg] stderr EOF — playback ended");
-        if (m_state == stRunning || m_state == stPaused) {
-            m_state = stStopped;
-            m_event((iPlayableService*)this, iPlayableService::evEOF);
+        if (n == 0 || (errno != EAGAIN && errno != EINTR)) {
+            /* Real EOF or error (not just "no data yet") —
+             * exteplayer3 has exited. Deregister notifier FIRST
+             * so the mainloop stops polling this fd (fixes GUI hang
+             * on old kernels that signal POLLHUP without POLLIN). */
+            eDebug("[serviceffmpeg] stderr EOF/error (errno=%d) — player exited", errno);
+            m_sn_read = NULL;
+            if (m_state == stRunning || m_state == stPaused) {
+                m_state = stStopped;
+                m_event((iPlayableService*)this, iPlayableService::evStopped);
+                m_event((iPlayableService*)this, iPlayableService::evEOF);
+            }
         }
         return;
     }
