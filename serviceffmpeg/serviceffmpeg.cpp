@@ -315,15 +315,25 @@ bool eServiceFfmpeg::launchPlayer()
 
     if (m_player_pid == 0) {
         /* ---- child ---- */
+        /* Own process group so kill(-pid) kills all children too */
+        setsid();
+
         dup2(stdin_pipe[0],  STDIN_FILENO);
         dup2(stderr_pipe[1], STDERR_FILENO);
+
+        /* Close all pipe ends in child — only keep the duped ones */
         close(stdin_pipe[0]);  close(stdin_pipe[1]);
         close(stderr_pipe[0]); close(stderr_pipe[1]);
 
-        /* Build argument vector */
-        static char uri_buf[4096];
-        static char ua_buf[512];
-        static char hdr_buf[2048];
+        /* Close all other inherited fds (E2 has many open sockets/pipes)
+         * so none of them accidentally keep parent's pipe ends alive */
+        for (int i = 3; i < 256; ++i)
+            close(i);
+
+        /* Build argument vector — safe to use stack after setsid/close loop */
+        char uri_buf[4096];
+        char ua_buf[512];
+        char hdr_buf[2048];
 
         strncpy(uri_buf, buildUri().c_str(), sizeof(uri_buf)-1);
         strncpy(ua_buf,  m_useragent.c_str(), sizeof(ua_buf)-1);
@@ -350,10 +360,6 @@ bool eServiceFfmpeg::launchPlayer()
         argv[ac++] = uri_buf;
         argv[ac]   = NULL;
 
-        /* Die with parent */
-        prctl(PR_SET_PDEATHSIG, SIGKILL);
-
-        eDebug("[serviceffmpeg] exec: %s", uri_buf);
         execv(EXTEPLAYER3_BIN, (char * const *)argv);
         _exit(127);
     }
@@ -405,17 +411,12 @@ void eServiceFfmpeg::stopPlayer()
         ::close(sock);
     }
 
-    /* SIGTERM first, then SIGKILL after reaping — fully non-blocking */
-    kill(pid, SIGTERM);
+    /* SIGTERM to whole process group first, then SIGKILL */
+    kill(-pid, SIGTERM);
 
-    /* Reap asynchronously: WNOHANG loop via already-running E2 child reaper,
-     * or just SIGKILL + WNOHANG — either way we never block the mainloop */
     int status;
     if (waitpid(pid, &status, WNOHANG) == 0) {
-        /* Not dead yet — SIGKILL and detach; kernel will reap as zombie
-         * which is cleaned up when E2 itself exits or via SIGCHLD handler */
-        kill(pid, SIGKILL);
-        /* Non-blocking final attempt */
+        kill(-pid, SIGKILL);
         waitpid(pid, &status, WNOHANG);
     }
 
