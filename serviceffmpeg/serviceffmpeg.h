@@ -100,7 +100,7 @@ public:
     eServiceFactoryFfmpeg();
     ~eServiceFactoryFfmpeg();
 
-    enum { id = 0x1002 };
+    enum { id = 0x1001 };  /* same as servicemp3 — transparent replacement */
 
     RESULT play(const eServiceReference &, ePtr<iPlayableService> &);
     RESULT record(const eServiceReference &, ePtr<iRecordableService> &);
