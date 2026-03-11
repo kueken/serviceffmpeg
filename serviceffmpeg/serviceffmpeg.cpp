@@ -503,7 +503,12 @@ void eServiceFfmpeg::processLine(const std::string &line)
 {
     eDebug("[serviceffmpeg] ← %s", line.c_str());
 
-    /* Dispatch on first unique key in line */
+    /* Dispatch on first unique key in line.
+     * Keys verified against real exteplayer3 stderr output:
+     *   {"v_c":{...}}  {"a_l":[...]}  {"a_c":{...}}
+     *   {"s_l":[...]}  {"s_c":{...}}  {"s_a":{...}}  {"s_f":{...}}
+     *   {"v_e":{...}}  (spontaneous video info from linuxdvb_mipsel)
+     */
     if (json_has(line, "EPLAYER3_EXTENDED"))  { onEplayer3Extended(line); return; }
     if (json_has(line, "PLAYBACK_OPEN"))      { onPlaybackOpen(line);     return; }
     if (json_has(line, "PLAYBACK_PLAY"))      { onPlaybackPlay(line);     return; }
@@ -512,12 +517,13 @@ void eServiceFfmpeg::processLine(const std::string &line)
     if (json_has(line, "PLAYBACK_CONTINUE"))  { onPlaybackContinue(line); return; }
     if (json_has(line, "PLAYBACK_LENGTH"))    { onPlaybackLength(line);   return; }
     if (json_has(line, "\"J\""))              { onPositionUpdate(line);   return; }
-    if (json_has(line, "\"al\""))             { onAudioList(line);        return; }
-    if (json_has(line, "\"ac\""))             { onAudioCurrent(line);     return; }
-    if (json_has(line, "\"sl\""))             { onSubtitleList(line);     return; }
+    if (json_has(line, "\"a_l\""))            { onAudioList(line);        return; }
+    if (json_has(line, "\"a_c\""))            { onAudioCurrent(line);     return; }
+    if (json_has(line, "\"s_l\""))            { onSubtitleList(line);     return; }
+    if (json_has(line, "\"s_c\""))            { onSubtitleCurrent(line);  return; }
     if (json_has(line, "\"s_a\""))            { onSubtitleData(line);     return; }
     if (json_has(line, "\"s_f\""))            { onSubtitleFlush(line);    return; }
-    if (json_has(line, "\"vc\""))             { onVideoInfoVc(line);      return; }
+    if (json_has(line, "\"v_c\""))            { onVideoInfoVc(line);      return; }
     if (json_has(line, "\"v_e\""))            { onVideoInfoVe(line);      return; }
     if (json_has(line, "FF_ERROR"))           { onFfError(line);          return; }
     /* PLAYBACK_FASTFORWARD / PLAYBACK_FASTBACKWARD / PLAYBACK_SEEK* ignored */
@@ -600,7 +606,7 @@ void eServiceFfmpeg::onPositionUpdate(const std::string &line)
 
 void eServiceFfmpeg::onAudioList(const std::string &line)
 {
-    std::string arr = json_inner(line, "al", '[', ']');
+    std::string arr = json_inner(line, "a_l", '[', ']');
     if (!arr.empty()) {
         parseAudioList(arr);
         m_event((iPlayableService*)this, iPlayableService::evUpdatedInfo);
@@ -609,8 +615,8 @@ void eServiceFfmpeg::onAudioList(const std::string &line)
 
 void eServiceFfmpeg::onAudioCurrent(const std::string &line)
 {
-    /* {"ac":{"id":N,...}} — find matching index in m_audio_tracks */
-    std::string inner = json_inner(line, "ac", '{', '}');
+    /* {"a_c":{"id":N,...}} — find matching index in m_audio_tracks */
+    std::string inner = json_inner(line, "a_c", '{', '}');
     if (inner.empty()) return;
     int tid = (int)json_int(inner, "id");
     for (int i = 0; i < (int)m_audio_tracks.size(); ++i) {
@@ -620,14 +626,26 @@ void eServiceFfmpeg::onAudioCurrent(const std::string &line)
 
 void eServiceFfmpeg::onSubtitleList(const std::string &line)
 {
-    std::string arr = json_inner(line, "sl", '[', ']');
+    std::string arr = json_inner(line, "s_l", '[', ']');
     if (!arr.empty()) {
         parseSubtitleList(arr);
         m_event((iPlayableService*)this, iPlayableService::evUpdatedInfo);
     }
 }
 
-void eServiceFfmpeg::onSubtitleData(const std::string &line)
+void eServiceFfmpeg::onSubtitleCurrent(const std::string &line)
+{
+    /* {"s_c":{"id":N,"e":"ENC","n":"Name"}} — currently active subtitle track */
+    std::string inner = json_inner(line, "s_c", '{', '}');
+    if (inner.empty()) return;
+    int tid = (int)json_int(inner, "id");
+    m_current_sub_idx = -1;
+    for (int i = 0; i < (int)m_subtitle_tracks.size(); ++i) {
+        if (m_subtitle_tracks[i].id == tid) { m_current_sub_idx = i; break; }
+    }
+}
+
+
 {
     /* {"s_a":{"id":N,"s":MS_start,"e":MS_end,"t":"text"}} */
     if (!m_subtitle_user || m_current_sub_idx < 0) return;
@@ -661,8 +679,8 @@ void eServiceFfmpeg::onSubtitleFlush(const std::string &)
 
 void eServiceFfmpeg::onVideoInfoVc(const std::string &line)
 {
-    /* {"vc":{"id":N,"e":"H264","n":"","w":W,"h":H,"f":F,"p":P,"an":A,"ad":D}} */
-    std::string inner = json_inner(line, "vc", '{', '}');
+    /* {"v_c":{"id":N,"e":"V_MPEG4/ISO/AVC","n":"und","w":W,"h":H,"f":F,"p":P,"an":A,"ad":D}} */
+    std::string inner = json_inner(line, "v_c", '{', '}');
     if (inner.empty()) return;
 
     m_video_info.encoding    = json_str(inner, "e");

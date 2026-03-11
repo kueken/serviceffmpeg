@@ -260,12 +260,13 @@ private:
     void  onPlaybackContinue(const std::string &line);
     void  onPlaybackLength(const std::string &line);
     void  onPositionUpdate(const std::string &line);   /* J */
-    void  onAudioList(const std::string &line);        /* al */
-    void  onAudioCurrent(const std::string &line);     /* ac */
-    void  onSubtitleList(const std::string &line);     /* sl */
+    void  onAudioList(const std::string &line);        /* a_l */
+    void  onAudioCurrent(const std::string &line);     /* a_c */
+    void  onSubtitleList(const std::string &line);     /* s_l */
+    void  onSubtitleCurrent(const std::string &line);  /* s_c */
     void  onSubtitleData(const std::string &line);     /* s_a */
     void  onSubtitleFlush(const std::string &line);    /* s_f */
-    void  onVideoInfoVc(const std::string &line);      /* vc  — from stdin query */
+    void  onVideoInfoVc(const std::string &line);      /* v_c — spontaneous */
     void  onVideoInfoVe(const std::string &line);      /* v_e — spontaneous from decoder */
     void  onFfError(const std::string &line);          /* FF_ERROR */
 
