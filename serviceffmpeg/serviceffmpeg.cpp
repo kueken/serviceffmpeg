@@ -360,7 +360,7 @@ bool eServiceFfmpeg::launchPlayer()
         argv[ac++] = uri_buf;
         argv[ac]   = NULL;
 
-        execv(EXTEPLAYER3_BIN, (char * const *)argv);
+        execvp(EXTEPLAYER3_BIN, (char * const *)argv);
         _exit(127);
     }
 

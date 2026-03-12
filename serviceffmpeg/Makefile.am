@@ -12,7 +12,6 @@ serviceffmpeg_la_SOURCES = \
 
 serviceffmpeg_la_CXXFLAGS = \
 	$(ENIGMA2_CFLAGS) \
-	$(FFMPEG_CFLAGS) \
 	$(PYTHON_CFLAGS) \
 	-fPIC \
 	-I$(top_srcdir)
