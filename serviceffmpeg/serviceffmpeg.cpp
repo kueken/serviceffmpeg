@@ -59,7 +59,9 @@
 #include <lib/base/nconfig.h>
 #include <lib/dvb/epgcache.h>
 #include <lib/dvb/dvbtime.h>
+#include <lib/dvb/decoder.h>
 #include <lib/gui/esubtitle.h>
+#include <lib/service/service.h>
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -70,12 +72,15 @@
 #include <sys/un.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
 /* DVB video ioctls needed to restore OSD after exteplayer3 */
+#include <linux/netlink.h>
+#include <linux/dvb/audio.h>
 #include <linux/dvb/video.h>
 
 #ifndef EXTEPLAYER3_BIN
@@ -203,6 +208,7 @@ eServiceFactoryFfmpeg::eServiceFactoryFfmpeg()
     };
     for (int i = 0; exts[i]; ++i) ext.push_back(exts[i]);
 
+    sc->removeServiceFactory(0x1001); /* remove servicemp3 first — same pattern as servicehisilicon */
     sc->addServiceFactory(eServiceFactoryFfmpeg::id, this, ext);
     m_service_info = new eStaticServiceFfmpegInfo();
 }
