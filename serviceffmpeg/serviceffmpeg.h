@@ -23,7 +23,11 @@
 #include <lib/base/eerror.h>
 #include <lib/base/object.h>
 #include <lib/base/nconfig.h>
+#include <lib/base/message.h>
 #include <lib/dvb/epgcache.h>
+#include <lib/dvb/pmt.h>
+#include <lib/dvb/subtitle.h>
+#include <lib/dvb/teletext.h>
 #include <lib/service/iservice.h>
 #include <lib/gui/esubtitle.h>
 
