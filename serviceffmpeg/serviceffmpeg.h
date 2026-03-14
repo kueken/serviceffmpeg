@@ -102,15 +102,15 @@ class eServiceFactoryFfmpeg : public iServiceHandler
     ePtr<eStaticServiceFfmpegInfo> m_service_info;
 public:
     eServiceFactoryFfmpeg();
-    ~eServiceFactoryFfmpeg();
+    virtual ~eServiceFactoryFfmpeg();
 
     enum { id = 0x1001 };  /* same as servicemp3 — transparent replacement */
 
-    RESULT play(const eServiceReference &, ePtr<iPlayableService> &);
-    RESULT record(const eServiceReference &, ePtr<iRecordableService> &);
-    RESULT list(const eServiceReference &, ePtr<iListableService> &);
-    RESULT info(const eServiceReference &, ePtr<iStaticServiceInformation> &);
-    RESULT offlineOperations(const eServiceReference &,
+    virtual RESULT play(const eServiceReference &, ePtr<iPlayableService> &);
+    virtual RESULT record(const eServiceReference &, ePtr<iRecordableService> &);
+    virtual RESULT list(const eServiceReference &, ePtr<iListableService> &);
+    virtual RESULT info(const eServiceReference &, ePtr<iStaticServiceInformation> &);
+    virtual RESULT offlineOperations(const eServiceReference &,
                              ePtr<iServiceOfflineOperations> &);
 };
 
@@ -130,79 +130,79 @@ class eServiceFfmpeg
 
 public:
     eServiceFfmpeg(eServiceReference ref);
-    ~eServiceFfmpeg();
+    virtual ~eServiceFfmpeg();
 
     /* --- iPlayableService --- */
-    RESULT connectEvent(const sigc::slot<void(iPlayableService*,int)> &event,
+    virtual RESULT connectEvent(const sigc::slot<void(iPlayableService*,int)> &event,
                         ePtr<eConnection> &connection);
-    RESULT start();
-    RESULT stop();
-    RESULT pause(ePtr<iPauseableService> &ptr);
-    RESULT seek(ePtr<iSeekableService> &ptr);
-    RESULT setSlowMotion(int ratio);
-    RESULT setFastForward(int ratio);
-    RESULT audioTracks(ePtr<iAudioTrackSelection> &ptr);
-    RESULT subtitle(ePtr<iSubtitleOutput> &ptr);
-    RESULT info(ePtr<iServiceInformation> &ptr);
+    virtual RESULT start();
+    virtual RESULT stop();
+    virtual RESULT pause(ePtr<iPauseableService> &ptr);
+    virtual RESULT seek(ePtr<iSeekableService> &ptr);
+    virtual RESULT setSlowMotion(int ratio);
+    virtual RESULT setFastForward(int ratio);
+    virtual RESULT audioTracks(ePtr<iAudioTrackSelection> &ptr);
+    virtual RESULT subtitle(ePtr<iSubtitleOutput> &ptr);
+    virtual RESULT info(ePtr<iServiceInformation> &ptr);
     /* scarthgap mandatory stubs */
-    RESULT setTarget(int target, bool noaudio = false);
-    RESULT audioChannel(ePtr<iAudioChannelSelection> &ptr);
-    RESULT timeshift(ePtr<iTimeshiftService> &ptr);
-    RESULT tap(ePtr<iTapService> &ptr);
-    RESULT cueSheet(ePtr<iCueSheet> &ptr);
-    RESULT audioDelay(ePtr<iAudioDelay> &ptr);
-    RESULT rdsDecoder(ePtr<iRdsDecoder> &ptr);
-    RESULT stream(ePtr<iStreamableService> &ptr);
-    RESULT streamed(ePtr<iStreamedService> &ptr);
-    RESULT keys(ePtr<iServiceKeys> &ptr);
-    void   setQpipMode(bool value, bool audio);
+    virtual RESULT setTarget(int target, bool noaudio = false);
+    virtual RESULT audioChannel(ePtr<iAudioChannelSelection> &ptr);
+    virtual RESULT timeshift(ePtr<iTimeshiftService> &ptr);
+    virtual RESULT tap(ePtr<iTapService> &ptr);
+    virtual RESULT cueSheet(ePtr<iCueSheet> &ptr);
+    virtual RESULT audioDelay(ePtr<iAudioDelay> &ptr);
+    virtual RESULT rdsDecoder(ePtr<iRdsDecoder> &ptr);
+    virtual RESULT stream(ePtr<iStreamableService> &ptr);
+    virtual RESULT streamed(ePtr<iStreamedService> &ptr);
+    virtual RESULT keys(ePtr<iServiceKeys> &ptr);
+    virtual void   setQpipMode(bool value, bool audio);
 
     /* --- iServiceInformation --- */
-    RESULT getName(std::string &name);
-    int    getInfo(int w);
-    std::string getInfoString(int w);
-    ePtr<iServiceInfoContainer> getInfoObject(int w);
+    virtual RESULT getName(std::string &name);
+    virtual int    getInfo(int w);
+    virtual std::string getInfoString(int w);
+    virtual ePtr<iServiceInfoContainer> getInfoObject(int w);
 
     /* --- iPauseableService --- */
-    RESULT pause();
-    RESULT unpause();
+    virtual RESULT pause();
+    virtual RESULT unpause();
 
     /* --- iSeekableService --- */
-    RESULT getLength(pts_t &len);
-    RESULT seekTo(pts_t to);
-    RESULT seekRelative(int direction, pts_t to);
-    RESULT getPlayPosition(pts_t &pos);
-    RESULT setTrickmode(int trick);
-    RESULT isCurrentlySeekable();
+    virtual RESULT getLength(pts_t &len);
+    virtual RESULT seekTo(pts_t to);
+    virtual RESULT seekRelative(int direction, pts_t to);
+    virtual RESULT getPlayPosition(pts_t &pos);
+    virtual RESULT setTrickmode(int trick);
+    virtual RESULT isCurrentlySeekable();
 
     /* --- iAudioTrackSelection --- */
-    int    getNumberOfTracks();
-    RESULT selectTrack(unsigned int i);
-    RESULT getTrackInfo(struct iAudioTrackInfo &, unsigned int n);
-    int    getCurrentTrack();
+    virtual int    getNumberOfTracks();
+    virtual RESULT selectTrack(unsigned int i);
+    virtual RESULT getTrackInfo(struct iAudioTrackInfo &, unsigned int n);
+    virtual int    getCurrentTrack();
 
     /* --- iSubtitleOutput --- */
-    RESULT enableSubtitles(iSubtitleUser *user, SubtitleTrack &track);
-    RESULT disableSubtitles();
-    RESULT getCachedSubtitle(SubtitleTrack &track);
-    RESULT getSubtitleList(std::vector<SubtitleTrack> &subtitle_list);
+    virtual RESULT enableSubtitles(iSubtitleUser *user, SubtitleTrack &track);
+    virtual RESULT disableSubtitles();
+    virtual RESULT getCachedSubtitle(SubtitleTrack &track);
+    virtual RESULT getSubtitleList(std::vector<SubtitleTrack> &subtitle_list);
 
     /* --- iRecordableService (stubs) --- */
-    RESULT connectEvent(const sigc::slot<void(iRecordableService*,int)> &event,
+    virtual RESULT connectEvent(const sigc::slot<void(iRecordableService*,int)> &event,
                         ePtr<eConnection> &connection);
-    RESULT getError(int &error);
-    RESULT subServices(ePtr<iSubserviceList> &ptr);
-    RESULT prepare(const char *filename,
+    virtual RESULT getError(int &error);
+    virtual RESULT subServices(ePtr<iSubserviceList> &ptr);
+    virtual RESULT prepare(const char *filename,
                    time_t begTime=-1, time_t endTime=-1, int eit_event_id=-1,
                    const char *name=0, const char *descr=0,
                    const char *tags=0, bool descramble=true,
                    bool recordecm=false, int packetsize=188);
-    RESULT prepareStreaming(bool descramble=true, bool includeecm=false);
-    RESULT start(bool simulate=false);
-    RESULT record(ePtr<iStreamableService> &ptr);
-    RESULT getFilenameExtension(std::string &ext);
-    RESULT frontendInfo(ePtr<iFrontendInformation> &ptr);
-    RESULT stopRecord();
+    virtual RESULT prepareStreaming(bool descramble=true, bool includeecm=false);
+    virtual RESULT start(bool simulate=false);
+    virtual RESULT record(ePtr<iStreamableService> &ptr);
+    virtual RESULT getFilenameExtension(std::string &ext);
+    virtual RESULT frontendInfo(ePtr<iFrontendInformation> &ptr);
+    virtual RESULT stopRecord();
 
 private:
     enum eState { stIdle, stRunning, stPaused, stStopped, stError };
