@@ -18,7 +18,8 @@ serviceffmpeg_la_CXXFLAGS = \
 
 serviceffmpeg_la_LIBADD = \
 	$(ENIGMA2_LIBS) \
-	$(PYTHON_LIBS)
+	$(PYTHON_LIBS) \
+	$(shell pkg-config --libs sigc++-3.0)
 
 serviceffmpeg_la_LDFLAGS = \
 	-module \
