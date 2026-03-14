@@ -12,14 +12,15 @@ serviceffmpeg_la_SOURCES = \
 
 serviceffmpeg_la_CXXFLAGS = \
 	$(ENIGMA2_CFLAGS) \
+	$(SIGCPP_CFLAGS) \
 	$(PYTHON_CFLAGS) \
 	-fPIC \
 	-I$(top_srcdir)
 
 serviceffmpeg_la_LIBADD = \
 	$(ENIGMA2_LIBS) \
-	$(PYTHON_LIBS) \
-	$(shell pkg-config --libs sigc++-3.0)
+	$(SIGCPP_LIBS) \
+	$(PYTHON_LIBS)
 
 serviceffmpeg_la_LDFLAGS = \
 	-module \

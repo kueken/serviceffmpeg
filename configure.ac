@@ -6,10 +6,6 @@ AC_CONFIG_MACRO_DIR([m4])
 
 AC_PROG_CXX
 AC_PROG_CC
-AC_PROG_CXX
-AM_PATH_PYTHON
-AX_PYTHON_DEVEL
-AC_LANG(C++)
 AC_PROG_INSTALL
 LT_INIT
 
@@ -17,6 +13,9 @@ PKG_PROG_PKG_CONFIG
 
 dnl Enigma2
 PKG_CHECK_MODULES([ENIGMA2], [enigma2])
+
+dnl sigc++-3.0 — explicit link to avoid undefined symbol at runtime
+PKG_CHECK_MODULES([SIGCPP], [sigc++-3.0])
 
 dnl Python3 — cross-build safe
 PKG_CHECK_MODULES([PYTHON], [python3-embed],
