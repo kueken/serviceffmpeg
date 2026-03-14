@@ -5,7 +5,6 @@ AM_CFLAGS = \
 	-Wall
 
 AM_CPPFLAGS = \
-	@PYTHON_CPPFLAGS@ \
 	-include Python.h
 
 AM_CXXFLAGS = \
