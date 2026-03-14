@@ -1,16 +1,6 @@
 # serviceffmpeg/Makefile.am
 # No own player binary — exteplayer3 (RDEPENDS) handles all playback.
 
-AM_CFLAGS = \
-	-Wall
-
-AM_CPPFLAGS = \
-	-include Python.h
-
-AM_CXXFLAGS = \
-	-Wall \
-	@ENIGMA2_CFLAGS@
-
 plugindir = $(libdir)/enigma2/python/Plugins/SystemPlugins/ServiceFFMPEG
 
 plugin_LTLIBRARIES = serviceffmpeg.la
