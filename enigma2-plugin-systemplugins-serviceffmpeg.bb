@@ -21,7 +21,7 @@ inherit autotools pkgconfig pythonnative
 
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
-PROVIDES  += "virtual-enigma2-mediaservice"
+PROVIDES += "virtual/enigma2-mediaservice"
 RPROVIDES:${PN} += "virtual-enigma2-mediaservice"
 
 EXTRA_OECONF = " \
