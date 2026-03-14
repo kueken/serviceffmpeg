@@ -25,4 +25,4 @@ serviceffmpeg_la_LIBADD = \
 serviceffmpeg_la_LDFLAGS = \
 	-module \
 	-avoid-version \
-	-no-undefined
+	-shared
