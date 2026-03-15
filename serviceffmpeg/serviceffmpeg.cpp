@@ -799,16 +799,16 @@ RESULT eServiceFfmpeg::start()
 {
     if (m_state != stIdle) return -1;
 
+    /* Fire evStart BEFORE launching player — exactly like serviceapp.
+     * ServiceEventTracker stack is correct at this point. */
+    m_event((iPlayableService*)this, iPlayableService::evUpdatedEventInfo);
+    m_event((iPlayableService*)this, iPlayableService::evStart);
+
     if (!launchPlayer()) {
         m_state = stError;
         m_event((iPlayableService*)this, iPlayableService::evUser + 12);
         return -1;
     }
-
-    /* Fire evStart immediately like serviceapp does — before exteplayer3
-     * confirms playback. ServiceEventTracker stack is correct at this point. */
-    m_event((iPlayableService*)this, iPlayableService::evUpdatedEventInfo);
-    m_event((iPlayableService*)this, iPlayableService::evStart);
     return 0;
 }
 
