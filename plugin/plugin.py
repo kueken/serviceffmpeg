@@ -1,8 +1,7 @@
-# plugin.py  —  serviceffmpeg autostart + MoviePlayer integration
+# plugin.py  —  serviceffmpeg
 #
-# Service ID 0x1001 — transparent replacement for servicemp3.
-# Uses MoviePlayer as base class (same as serviceapp) to ensure
-# correct ServiceEventTracker stack and evStart delivery.
+# Registers serviceffmpeg (.so) at autostart and provides a
+# MoviePlayer-based player that correctly handles evStart/ServiceEventTracker.
 
 from Plugins.Plugin import PluginDescriptor
 from Screens.InfoBar import InfoBar, MoviePlayer
@@ -37,9 +36,35 @@ def autostart(reason, **kwargs):
             print("[serviceffmpeg] failed to load: %s" % e)
 
 
-def play_serviceffmpeg(session, service, **kwargs):
-    ref = eServiceReference(0x1001, 0, service.getPath())
+def filescan_open(list, session, **kwargs):
+    """Open files directly with ServiceFfmpegPlayer (MoviePlayer based)"""
+    if not list:
+        return
+    # Use first file — MoviePlayer handles single file playback
+    f = list[0]
+    path = f.path
+    ref = eServiceReference(0x1001, 0, path)
     session.open(ServiceFfmpegPlayer, service=ref)
+
+
+def filescan(**kwargs):
+    from Components.Scanner import Scanner, ScanPath
+    return [
+        Scanner(
+            mimetypes=[
+                "video/mpeg", "video/mp2t", "video/x-msvideo", "video/mkv",
+                "video/x-ms-wmv", "video/x-matroska", "video/mp4", "video/avi",
+                "video/divx", "video/x-flv", "video/quicktime", "video/x-ms-asf",
+                "video/3gpp", "video/3gpp2", "video/mts",
+            ],
+            paths_to_scan=[
+                ScanPath(path="", with_subdirs=False),
+            ],
+            name="ServiceFFMPEG",
+            description=_("Play with serviceffmpeg (exteplayer3)"),
+            openfnc=filescan_open,
+        ),
+    ]
 
 
 def Plugins(**kwargs):
@@ -52,10 +77,10 @@ def Plugins(**kwargs):
             fnc=autostart,
         ),
         PluginDescriptor(
-            name="ServiceFFMPEG",
-            description="Play with serviceffmpeg (exteplayer3)",
-            where=PluginDescriptor.WHERE_MOVIELIST,
+            name=_("ServiceFFMPEG"),
+            description=_("Play with serviceffmpeg (exteplayer3)"),
+            where=PluginDescriptor.WHERE_FILESCAN,
             needsRestart=False,
-            fnc=play_serviceffmpeg,
+            fnc=filescan,
         ),
     ]
