@@ -7,6 +7,7 @@ plugin_LTLIBRARIES = serviceffmpeg.la
 
 serviceffmpeg_la_SOURCES = \
 	serviceffmpeg.cpp \
+	serviceffmpeg.h \
 	pythonmodule.cpp
 
 serviceffmpeg_la_CXXFLAGS = \

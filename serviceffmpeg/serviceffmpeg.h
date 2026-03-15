@@ -130,7 +130,7 @@ class eServiceFfmpeg
 
 public:
     eServiceFfmpeg(eServiceReference ref);
-    ~eServiceFfmpeg();
+    virtual ~eServiceFfmpeg();
 
     /* --- iPlayableService --- */
     RESULT connectEvent(const sigc::slot<void(iPlayableService*,int)> &event,
