@@ -557,10 +557,7 @@ void eServiceFfmpeg::onPlaybackPlay(const std::string &line)
 {
     if (json_int(line, "sts") == 0) {
         m_state = stRunning;
-        /* Fire evStart here — after player confirmed playing (like servicehisilicon
-         * fires on state=2 from Netlink). This avoids race with ServiceEventTracker. */
-        m_event((iPlayableService*)this, iPlayableService::evUpdatedEventInfo);
-        m_event((iPlayableService*)this, iPlayableService::evStart);
+        /* evStart already fired in start() — just signal updated info */
         m_event((iPlayableService*)this, iPlayableService::evUpdatedInfo);
         m_nownext_timer->startLongTimer(3);
         /* Request track lists and initial length */
@@ -807,6 +804,11 @@ RESULT eServiceFfmpeg::start()
         m_event((iPlayableService*)this, iPlayableService::evUser + 12);
         return -1;
     }
+
+    /* Fire evStart immediately like serviceapp does — before exteplayer3
+     * confirms playback. ServiceEventTracker stack is correct at this point. */
+    m_event((iPlayableService*)this, iPlayableService::evUpdatedEventInfo);
+    m_event((iPlayableService*)this, iPlayableService::evStart);
     return 0;
 }
 
