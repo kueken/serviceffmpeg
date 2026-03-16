@@ -226,6 +226,7 @@ private:
     bool   m_seekable;
     bool   m_is_live;
     int    m_error_code;
+    int64_t m_last_poll_ms;     /* timestamp of last j\n poll (ms, CLOCK_MONOTONIC) */
 
     /* Subtitle output */
     iSubtitleUser  *m_subtitle_user;

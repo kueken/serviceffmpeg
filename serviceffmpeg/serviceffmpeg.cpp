@@ -257,6 +257,7 @@ eServiceFfmpeg::eServiceFfmpeg(eServiceReference ref)
     , m_seekable(true)
     , m_is_live(false)
     , m_error_code(0)
+    , m_last_poll_ms(0)
     , m_subtitle_user(NULL)    , m_player_pid(-1)
     , m_stdin_fd(-1)
     , m_stderr_fd(-1)
@@ -289,6 +290,14 @@ eServiceFfmpeg::eServiceFfmpeg(eServiceReference ref)
 
     m_nownext_timer = eTimer::create(eApp);
     CONNECT(m_nownext_timer->timeout, eServiceFfmpeg::updateEpgCacheNowNext);
+
+    /* Launch player immediately in constructor — like serviceapp starts
+     * exteplayer3 in ExtEplayer3::ExtEplayer3(). This way the player is
+     * already running when start()/evStart are called. */
+    if (!launchPlayer()) {
+        m_state = stError;
+        eDebug("[serviceffmpeg] launchPlayer failed in constructor");
+    }
 
     eDebug("[serviceffmpeg] created: %s", m_ref.path.c_str());
 }
@@ -382,7 +391,7 @@ bool eServiceFfmpeg::launchPlayer()
     fcntl(m_stderr_fd, F_SETFL, flags | O_NONBLOCK);
 
     m_sn_read = eSocketNotifier::create(eApp, m_stderr_fd,
-        eSocketNotifier::Read | eSocketNotifier::Hungup);
+        eSocketNotifier::Read | eSocketNotifier::Priority | eSocketNotifier::Hungup);
     CONNECT(m_sn_read->activated, eServiceFfmpeg::onStderrData);
 
     m_state = stRunning;
@@ -797,18 +806,13 @@ RESULT eServiceFfmpeg::connectEvent(
 
 RESULT eServiceFfmpeg::start()
 {
+    if (m_state == stError) return -1;
     if (m_state != stIdle) return -1;
 
-    /* Fire evStart BEFORE launching player — exactly like serviceapp.
+    /* Fire evStart — player already launched in constructor like serviceapp.
      * ServiceEventTracker stack is correct at this point. */
     m_event((iPlayableService*)this, iPlayableService::evUpdatedEventInfo);
     m_event((iPlayableService*)this, iPlayableService::evStart);
-
-    if (!launchPlayer()) {
-        m_state = stError;
-        m_event((iPlayableService*)this, iPlayableService::evUser + 12);
-        return -1;
-    }
     return 0;
 }
 
@@ -895,8 +899,19 @@ RESULT eServiceFfmpeg::seekRelative(int direction, pts_t to)
 RESULT eServiceFfmpeg::getPlayPosition(pts_t &pos)
 {
     pos = m_last_position;
-    if (m_state == stRunning)
-        sendCmd("j\n");  /* async refresh */
+    if (m_state == stRunning) {
+        /* Rate-limit position polls to max 1 per second.
+         * Without this, E2 calls getPlayPosition() so frequently that
+         * the j\n -> J response loop floods the mainloop and causes
+         * the spinner / unresponsive UI. */
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        int64_t now_ms = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+        if (now_ms - m_last_poll_ms >= 1000) {
+            m_last_poll_ms = now_ms;
+            sendCmd("j\n");
+        }
+    }
     return 0;
 }
 
