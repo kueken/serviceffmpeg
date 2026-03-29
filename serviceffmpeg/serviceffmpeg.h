@@ -1,5 +1,5 @@
-#ifndef __SERVICEFFMPEG_H
-#define __SERVICEFFMPEG_H
+#ifndef __serviceFfmpeg_h
+#define __serviceFfmpeg_h
 
 /*
  * serviceffmpeg.h  —  Enigma2 media service plugin using exteplayer3 as backend
@@ -288,4 +288,4 @@ private:
     static pts_t   msToPts(int64_t ms)   { return ms  * 90LL;    }
 };
 
-#endif /* __SERVICEFFMPEG_H */
+#endif /* __serviceFfmpeg_h */
