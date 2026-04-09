@@ -208,7 +208,7 @@ eServiceFactoryFfmpeg::eServiceFactoryFfmpeg()
     };
     for (int i = 0; exts[i]; ++i) ext.push_back(exts[i]);
 
-    sc->removeServiceFactory(0x1001); /* remove servicemp3 first — same pattern as servicehisilicon */
+    sc->removeServiceFactory(0x1337); /* remove servicemp3 first — same pattern as servicehisilicon */
     sc->addServiceFactory(eServiceFactoryFfmpeg::id, this, ext);
     m_service_info = new eStaticServiceFfmpegInfo();
 }
