@@ -104,7 +104,7 @@ public:
     eServiceFactoryFfmpeg();
     virtual ~eServiceFactoryFfmpeg();
 
-    enum { id = 0x138B };  /* same as exteplayer3 — transparent replacement */
+    enum { id = 5002 };  /* same as exteplayer3 — transparent replacement */
 
     RESULT play(const eServiceReference &, ePtr<iPlayableService> &);
     RESULT record(const eServiceReference &, ePtr<iRecordableService> &);
