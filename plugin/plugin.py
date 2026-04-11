@@ -43,7 +43,7 @@ def filescan_open(list, session, **kwargs):
     # Use first file — MoviePlayer handles single file playback
     f = list[0]
     path = f.path
-    ref = eServiceReference(5002, 0, path)
+    ref = eServiceReference(0x1001, 0, path)
     session.open(ServiceFfmpegPlayer, service=ref)
 
 
