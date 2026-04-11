@@ -899,8 +899,27 @@ void   eServiceFfmpeg::setQpipMode(bool, bool)                       {}
 /* =========================================================================
  * iPauseableService
  * ======================================================================= */
-RESULT eServiceFfmpeg::pause()   { sendCmd("p\n"); return 0; }
-RESULT eServiceFfmpeg::unpause() { sendCmd("c\n"); return 0; }
+RESULT eServiceFfmpeg::pause()
+{
+    if (m_state == stRunning) {
+        m_state = stPaused;
+        sendCmd("p\n");
+    }
+    return 0;
+}
+
+RESULT eServiceFfmpeg::unpause()
+{
+    /* Only send continue command after exteplayer3 has confirmed
+     * PLAYBACK_PLAY. Before that the player is still initialising
+     * and sending c\n too early puts it in an undefined state which
+     * causes the mainloop to spin waiting for an event that never comes. */
+    if (m_state == stPaused) {
+        m_state = stRunning;
+        sendCmd("c\n");
+    }
+    return 0;
+}
 
 /* =========================================================================
  * iSeekableService
