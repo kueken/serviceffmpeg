@@ -314,6 +314,41 @@ eServiceFfmpeg::~eServiceFfmpeg()
  * ======================================================================= */
 bool eServiceFfmpeg::launchPlayer()
 {
+    /* Hand over the HW video decoder to exteplayer3.
+     *
+     * E2's DVB service leaves the decoder in VIDEO_SOURCE_DEMUX mode with
+     * vpid=-1 ("clean handover"). On BCM7xxx that means the HW decoder is
+     * still owned by the DVB pipeline — exteplayer3 cannot acquire it and
+     * the mainloop spins waiting for a decoder event that never comes.
+     *
+     * Neutrino solves this by switching VIDEO_SELECT_SOURCE to
+     * VIDEO_SOURCE_MEMORY before starting the external player.  We do the
+     * same here: switch the source so the DVB demux pipeline releases the
+     * decoder, then call VIDEO_PLAY + VIDEO_CONTINUE so the hardware is
+     * in a defined "running from memory" state that exteplayer3 expects.
+     */
+    {
+        int vfd = ::open("/dev/dvb/adapter0/video0", O_RDWR | O_NONBLOCK);
+        if (vfd >= 0) {
+            ::ioctl(vfd, VIDEO_SELECT_SOURCE, VIDEO_SOURCE_MEMORY);
+            ::ioctl(vfd, VIDEO_PLAY);
+            ::ioctl(vfd, VIDEO_CONTINUE);
+            ::close(vfd);
+            eDebug("[serviceffmpeg] launchPlayer: VIDEO_SOURCE_MEMORY handover done");
+        } else {
+            eDebug("[serviceffmpeg] launchPlayer: cannot open video0: %s", strerror(errno));
+        }
+
+        /* Same for audio — release audio decoder from DVB pipeline */
+        int afd = ::open("/dev/dvb/adapter0/audio0", O_RDWR | O_NONBLOCK);
+        if (afd >= 0) {
+            ::ioctl(afd, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_MEMORY);
+            ::ioctl(afd, AUDIO_PLAY);
+            ::close(afd);
+            eDebug("[serviceffmpeg] launchPlayer: AUDIO_SOURCE_MEMORY handover done");
+        }
+    }
+
     int stdin_pipe[2], stderr_pipe[2];
     if (pipe(stdin_pipe) < 0 || pipe(stderr_pipe) < 0) {
         eDebug("[serviceffmpeg] pipe() failed: %s", strerror(errno));
