@@ -1,4 +1,4 @@
-AC_INIT([serviceffmpeg],[2.0.0])
+AC_INIT([serviceexteplayer3],[2.0.0])
 AC_CONFIG_AUX_DIR([.])
 AM_INIT_AUTOMAKE([foreign])
 AC_CONFIG_HEADERS([config.h])
@@ -16,10 +16,10 @@ PKG_PROG_PKG_CONFIG
 dnl Enigma2
 PKG_CHECK_MODULES([ENIGMA2], [enigma2])
 
-dnl sigc++-3.0 — explicit link to avoid undefined symbol at runtime
+dnl sigc++-3.0
 PKG_CHECK_MODULES([SIGCPP], [sigc++-3.0])
 
-dnl Python3 — cross-build safe
+dnl Python3
 PKG_CHECK_MODULES([PYTHON], [python3-embed],
     [have_python=yes],
     [PKG_CHECK_MODULES([PYTHON], [python3],
@@ -37,22 +37,24 @@ AS_IF([test "x$have_python" = "xno"],
 AC_SUBST([PYTHON_CFLAGS])
 AC_SUBST([PYTHON_LIBS])
 
-dnl exteplayer3 binary path — runtime dep, compile-time path only for default
-AC_ARG_WITH([exteplayer3],
-    AS_HELP_STRING([--with-exteplayer3=PATH],
-        [path to exteplayer3 binary @<:@default: BINDIR/exteplayer3@:>@]),
-    [ep3_bin="$withval"],
-    [ep3_bin="${bindir}/exteplayer3"])
-AC_DEFINE_UNQUOTED([EXTEPLAYER3_BIN], ["$ep3_bin"],
-    [Absolute path to exteplayer3 binary])
+dnl FFmpeg — required for exteplayer3 built-in
+PKG_CHECK_MODULES([FFMPEG],
+    [libavformat libavcodec libavutil libswresample libswscale],
+    [],
+    [AC_MSG_ERROR([FFmpeg libraries not found])])
 
 CXXFLAGS="$CXXFLAGS -Wall -Wno-deprecated -std=c++17"
 
-AC_CONFIG_FILES([Makefile serviceffmpeg/Makefile plugin/Makefile])
+AC_CONFIG_FILES([
+    Makefile
+    src/Makefile
+    src/serviceexteplayer3/Makefile
+    src/plugin/Makefile
+])
 AC_OUTPUT
 
 AC_MSG_RESULT([
-serviceffmpeg 2.0 (exteplayer3 backend)
-  exteplayer3 : $ep3_bin
-  Python      : $PYTHON_CFLAGS
+serviceexteplayer3 2.0 (exteplayer3 built-in)
+  Python  : $PYTHON_CFLAGS
+  FFmpeg  : $FFMPEG_LIBS
 ])
