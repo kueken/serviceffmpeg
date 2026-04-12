@@ -96,3 +96,8 @@ serviceexteplayer3_la_LDFLAGS = \
 	-module \
 	-avoid-version \
 	-shared
+	
+AM_CPPFLAGS = \
+    -I$(top_srcdir)/src/serviceexteplayer3 \
+    -I$(top_srcdir)/src/serviceexteplayer3/external \
+    -I$(top_srcdir)/src/serviceexteplayer3/include
