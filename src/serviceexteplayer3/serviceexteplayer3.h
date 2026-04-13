@@ -208,7 +208,11 @@ private:
     std::string buildUri() const;
     void        onStderrData(int fd);
     void        processLine(const std::string &line);
+    void        onEplayer3Extended(const std::string &line);
+    void        onPlaybackOpen(const std::string &line);
     void        onPlaybackPlay(const std::string &line);
+    void        onPlaybackPause(const std::string &line);
+    void        onPlaybackContinue(const std::string &line);
     void        onPlaybackStop(const std::string &line);
     void        onPlaybackLength(const std::string &line);
     void        onPositionUpdate(const std::string &line);
