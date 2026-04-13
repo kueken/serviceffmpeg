@@ -62,7 +62,6 @@ serviceexteplayer3_la_SOURCES += \
 	external/plugins/src/png.c
 
 serviceexteplayer3_la_CFLAGS = \
-	-I$(top_srcdir)/src/serviceexteplayer3/external/ffmpeg/src \
 	-D_FILE_OFFSET_BITS=64 \
 	-D_LARGEFILE64_SOURCE \
 	-D_LARGEFILE_SOURCE \
@@ -80,11 +79,7 @@ serviceexteplayer3_la_CXXFLAGS = \
 	-std=c++17 \
 	-Iinclude \
 	-Iexternal \
-	-Iexternal/flv2mpeg4 \
-	-D_FILE_OFFSET_BITS=64 \
-	-D_LARGEFILE64_SOURCE \
-	-D_LARGEFILE_SOURCE \
-	-DHAVE_FLV2MPEG4_CONVERTER
+	-Iexternal/flv2mpeg4
 
 serviceexteplayer3_la_LIBADD = \
 	$(ENIGMA2_LIBS) \
@@ -93,12 +88,7 @@ serviceexteplayer3_la_LIBADD = \
 	$(FFMPEG_LIBS) \
 	-ldl \
 	-lpthread \
-	-lpng \
-	-lswscale \
-	-lavformat \
-	-lavcodec \
-	-lavutil \
-	-lswresample
+	-lpng
 
 serviceexteplayer3_la_LDFLAGS = \
 	-module \
