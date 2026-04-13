@@ -26,12 +26,12 @@
 #include "m4v.h"
 #include "bitwriter.h"
 
-void m4v_encode_m4v_header(BW *bw, M4V_VOL *vol, uint32 time);
-void m4v_encode_vop_header(BW *bw, M4V_VOP *vop, int time_bits, int vop_not_coded);
+void m4v_encode_m4v_header(BW* bw, M4V_VOL* vol, uint32 time);
+void m4v_encode_vop_header(BW* bw, M4V_VOP* vop, int time_bits, int vop_not_coded);
 
-void m4v_encode_I_mb(BW *bw, M4V_MICROBLOCK *mb);
-void m4v_encode_P_mb(BW *bw, M4V_MICROBLOCK *mb);
+void m4v_encode_I_mb(BW* bw, M4V_MICROBLOCK* mb);
+void m4v_encode_P_mb(BW* bw, M4V_MICROBLOCK* mb);
 
-int  m4v_encode_I_dcpred(M4V_MICROBLOCK *mb, M4V_DCPRED *dcpred, int mb_x, int mb_y);
+int  m4v_encode_I_dcpred(M4V_MICROBLOCK* mb, M4V_DCPRED* dcpred, int mb_x, int mb_y);
 
 #endif // M4VENCODE_H

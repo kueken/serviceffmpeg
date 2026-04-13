@@ -20,7 +20,7 @@
  */
 
 /* ***************************** */
-/* Includes                      */
+/* Includes		      */
 /* ***************************** */
 
 #include <stdio.h>
@@ -50,23 +50,21 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Makros/Constants	      */
 /* ***************************** */
-
-#define VC1_SEQUENCE_LAYER_METADATA_START_CODE 0x80
+#define VC1_SEQUENCE_LAYER_METADATA_START_CODE  0x80
 #define VC1_FRAME_START_CODE 0x0d
 
 /* ***************************** */
 /* Types                         */
 /* ***************************** */
 
-//static const unsigned char SequenceLayerStartCode[] = {0x00, 0x00, 0x01, VC1_SEQUENCE_LAYER_METADATA_START_CODE};
-static const uint8_t Vc1FrameStartCode[] = {0, 0, 1, VC1_FRAME_START_CODE};
+static const unsigned char  SequenceLayerStartCode[] = {0x00,    0x00,   0x01,   VC1_SEQUENCE_LAYER_METADATA_START_CODE};
+static const  uint8_t Vc1FrameStartCode[]     = {0, 0, 1, VC1_FRAME_START_CODE};
 
 /* ***************************** */
-/* Variables                     */
+/* Varaibles                     */
 /* ***************************** */
-
 static int initialHeader = 1;
 static video_codec_data_t videocodecdata = {0, 0};
 
@@ -77,115 +75,116 @@ static video_codec_data_t videocodecdata = {0, 0};
 /* ***************************** */
 /* MISC Functions                */
 /* ***************************** */
-
 static int reset()
 {
-	initialHeader = 1;
-	return 0;
+    initialHeader = 1;
+    return 0;
 }
 
-static int writeData(WriterAVCallData_t *call)
+static int writeData(void* _call)
 {
-	//int len = 0;
+    WriterAVCallData_t* call = (WriterAVCallData_t*) _call;
 
-	vc1_printf(10, "\n");
+    int len = 0;
 
-	if (call == NULL)
-	{
-		vc1_err("call data is NULL...\n");
-		return 0;
-	}
+    vc1_printf(10, "\n");
 
-	if ((call->data == NULL) || (call->len <= 0))
-	{
-		vc1_err("parsing NULL Data. ignoring...\n");
-		return 0;
-	}
+    if (call == NULL)
+    {
+        vc1_err("call data is NULL...\n");
+        return 0;
+    }
 
-	if (call->fd < 0)
-	{
-		vc1_err("file pointer < 0. ignoring ...\n");
-		return 0;
-	}
+    if ((call->data == NULL) || (call->len <= 0))
+    {
+        vc1_err("parsing NULL Data. ignoring...\n");
+        return 0;
+    }
 
-	vc1_printf(10, "VideoPts %lld\n", call->Pts);
-	vc1_printf(10, "Got Private Size %d\n", call->private_size);
+    if (call->fd < 0)
+    {
+        vc1_err("file pointer < 0. ignoring ...\n");
+        return 0;
+    }
 
-	unsigned char PesHeader[PES_MAX_HEADER_SIZE + sizeof(Vc1FrameStartCode)];
-	int32_t ic = 0;
-	struct iovec iov[5];
-	unsigned int PacketLength = 0;
+    vc1_printf(10, "VideoPts %lld\n", call->Pts);
+    vc1_printf(10, "Got Private Size %d\n", call->private_size);
 
-	iov[ic++].iov_base = PesHeader;
-	if (initialHeader)
-	{
-		initialHeader = 0;
-		if (videocodecdata.data)
-		{
-			free(videocodecdata.data);
-			videocodecdata.data = NULL;
-		}
-		videocodecdata.length = call->private_size + 8;
-		videocodecdata.data  = malloc(videocodecdata.length);
-		memset(videocodecdata.data, 0, videocodecdata.length);
-		memcpy(videocodecdata.data + 8, call->private_data, call->private_size);
-		if (STB_DREAMBOX == GetSTBType() || 0 != ioctl(call->fd, VIDEO_SET_CODEC_DATA, &videocodecdata))
-		{
-			iov[ic].iov_base  = videocodecdata.data;
-			iov[ic++].iov_len = videocodecdata.length;
-			PacketLength     += videocodecdata.length;
-		}
-	}
+    unsigned char PesHeader[PES_MAX_HEADER_SIZE + sizeof(Vc1FrameStartCode)];
+    int32_t ic = 0;
+    struct iovec iov[5];
+    unsigned int PacketLength = 0;
 
-	uint8_t needFrameStartCode = 0;
-	if (sizeof(Vc1FrameStartCode) >= call->len ||
-		memcmp(call->data, Vc1FrameStartCode, sizeof(Vc1FrameStartCode)) != 0)
-	{
-		needFrameStartCode = 1;
-		PacketLength += sizeof(Vc1FrameStartCode);
-	}
+    iov[ic++].iov_base = PesHeader;
+    if (initialHeader)
+    {
+        initialHeader = 0;
+        if(videocodecdata.data)
+        {
+            free(videocodecdata.data);
+            videocodecdata.data = NULL;
+        }
 
-	iov[ic].iov_base  = call->data;
-	iov[ic++].iov_len = call->len;
-	PacketLength     += call->len;
+        videocodecdata.length = call->private_size + 8;
+        videocodecdata.data  = malloc(videocodecdata.length);
+        memset(videocodecdata.data, 0, videocodecdata.length);
+        memcpy(videocodecdata.data + 8, call->private_data, call->private_size);
+        if(STB_DREAMBOX == GetSTBType() || 0 != ioctl(call->fd, VIDEO_SET_CODEC_DATA, &videocodecdata))
+        {
+            iov[ic].iov_base  = videocodecdata.data;
+            iov[ic++].iov_len = videocodecdata.length;
+            PacketLength     += videocodecdata.length;
+        }
+    }
 
-	iov[0].iov_len = InsertPesHeader(PesHeader, PacketLength, MPEG_VIDEO_PES_START_CODE, call->Pts, 0);
+    uint8_t needFrameStartCode = 0;
+    if( sizeof(Vc1FrameStartCode) >= call->len
+        || memcmp(call->data, Vc1FrameStartCode, sizeof(Vc1FrameStartCode)) != 0 )
+    {
+        needFrameStartCode = 1;
+        PacketLength += sizeof(Vc1FrameStartCode);
+    }
 
-	/* some mipsel receiver(s) like et4x00 needs to have Copy(0)/Original(1) flag set to Original */
-	PesHeader[6] |= 1;
+    iov[ic].iov_base  = call->data;
+    iov[ic++].iov_len = call->len;
+    PacketLength     += call->len;
 
-	if (needFrameStartCode)
-	{
-		memcpy(PesHeader + iov[0].iov_len, Vc1FrameStartCode, sizeof(Vc1FrameStartCode));
-		iov[0].iov_len += sizeof(Vc1FrameStartCode);
-	}
+    iov[0].iov_len = InsertPesHeader(PesHeader, PacketLength, MPEG_VIDEO_PES_START_CODE, call->Pts, 0);
 
-	if (videocodecdata.data)
-	{
-		free(videocodecdata.data);
-		videocodecdata.data = NULL;
-	}
+    /* some mipsel receiver(s) like et4x00 needs to have Copy(0)/Original(1) flag set to Original */
+    PesHeader[6] |= 1;
 
-	return call->WriteV(call->fd, iov, ic);
+    if(needFrameStartCode)
+    {
+        memcpy(PesHeader + iov[0].iov_len, Vc1FrameStartCode, sizeof(Vc1FrameStartCode) );
+        iov[0].iov_len += sizeof(Vc1FrameStartCode);
+    }
+
+    if(videocodecdata.data)
+    {
+        free(videocodecdata.data);
+        videocodecdata.data = NULL;
+    }
+
+    return call->WriteV(call->fd, iov, ic);
 }
 
 /* ***************************** */
 /* Writer  Definition            */
 /* ***************************** */
 
-static WriterCaps_t caps =
-{
-	"vc1",
-	eVideo,
-	"V_VC1",
-	VIDEO_ENCODING_VC1,
-	STREAMTYPE_VC1,
-	CT_MPEG4_PART2
+static WriterCaps_t caps = {
+    "vc1",
+    eVideo,
+    "V_VC1",
+    VIDEO_ENCODING_VC1,
+    STREAMTYPE_VC1,
+    CT_MPEG4_PART2
 };
 
-struct Writer_s WriterVideoVC1 =
-{
-	&reset,
-	&writeData,
-	&caps
+struct Writer_s WriterVideoVC1 = {
+    &reset,
+    &writeData,
+    NULL,
+    &caps
 };

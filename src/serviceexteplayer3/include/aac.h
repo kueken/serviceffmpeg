@@ -24,45 +24,45 @@
 
 static inline int HasADTSHeader(uint8_t *data, int size)
 {
-	if (size >= AAC_HEADER_LENGTH && 0xFF == data[0] && 0xF0 == (0xF0 & data[1]) &&
-		size == ((data[3] & 0x3) << 11 | data[4] << 3 | data[5] >> 5))
-	{
-		return 1;
-	}
+    if (size >= AAC_HEADER_LENGTH && 0xFF == data[0] && 0xF0 == 0xF0 & data[1] &&
+        size == ((data[3] & 0x3) << 11 | data[4] << 3 | data[5] >> 5))
+    {
+        return 1;
+    }
 
-	return 0;
+    return 0;
 }
 
-static inline int aac_get_sample_rate_index(uint32_t sample_rate)
+static inline int aac_get_sample_rate_index (uint32_t sample_rate)
 {
-	if (96000 <= sample_rate)
-		return 0;
-	else if (88200 <= sample_rate)
-		return 1;
-	else if (64000 <= sample_rate)
-		return 2;
-	else if (48000 <= sample_rate)
-		return 3;
-	else if (44100 <= sample_rate)
-		return 4;
-	else if (32000 <= sample_rate)
-		return 5;
-	else if (24000 <= sample_rate)
-		return 6;
-	else if (22050 <= sample_rate)
-		return 7;
-	else if (16000 <= sample_rate)
-		return 8;
-	else if (12000 <= sample_rate)
-		return 9;
-	else if (11025 <= sample_rate)
-		return 10;
-	else if (8000 <= sample_rate)
-		return 11;
-	else if (7350 <= sample_rate)
-		return 12;
-	else
-		return 13;
+    if (96000 <= sample_rate)
+        return 0;
+    else if (88200 <= sample_rate)
+        return 1;
+    else if (64000 <= sample_rate)
+        return 2;
+    else if (48000 <= sample_rate)
+        return 3;
+    else if (44100 <= sample_rate)
+        return 4;
+    else if (32000 <= sample_rate)
+        return 5;
+    else if (24000 <= sample_rate)
+        return 6;
+    else if (22050 <= sample_rate)
+        return 7;
+    else if (16000 <= sample_rate)
+        return 8;
+    else if (12000 <= sample_rate)
+        return 9;
+    else if (11025 <= sample_rate)
+        return 10;
+    else if (8000 <= sample_rate)
+        return 11;
+    else if (7350 <= sample_rate)
+        return 12;
+    else
+        return 13;
 }
 
 #endif

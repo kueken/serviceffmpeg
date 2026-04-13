@@ -58,9 +58,8 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Variables                     */
+/* Varaibles                     */
 /* ***************************** */
-
 static int initialHeader = 1;
 
 /* ***************************** */
@@ -70,100 +69,100 @@ static int initialHeader = 1;
 /* ***************************** */
 /* MISC Functions                */
 /* ***************************** */
-
 static int reset()
 {
-	initialHeader = 1;
-	return 0;
+    initialHeader = 1;
+    return 0;
 }
 
-static int writeData(WriterAVCallData_t *call)
+static int writeData(void* _call)
 {
-	unsigned char PesHeader[PES_MAX_HEADER_SIZE];
+    WriterAVCallData_t* call = (WriterAVCallData_t*) _call;
 
-	mpeg4_printf(10, "\n");
+    unsigned char  PesHeader[PES_MAX_HEADER_SIZE];
 
-	if (call == NULL)
-	{
-		mpeg4_err("call data is NULL...\n");
-		return 0;
-	}
+    mpeg4_printf(10, "\n");
 
-	if ((call->data == NULL) || (call->len <= 0))
-	{
-		mpeg4_err("parsing NULL Data. ignoring...\n");
-		return 0;
-	}
+    if (call == NULL)
+    {
+        mpeg4_err("call data is NULL...\n");
+        return 0;
+    }
 
-	if (call->fd < 0)
-	{
-		mpeg4_err("file pointer < 0. ignoring ...\n");
-		return 0;
-	}
+    if ((call->data == NULL) || (call->len <= 0))
+    {
+        mpeg4_err("parsing NULL Data. ignoring...\n");
+        return 0;
+    }
 
-	mpeg4_printf(10, "VideoPts %lld\n", call->Pts);
+    if (call->fd < 0)
+    {
+        mpeg4_err("file pointer < 0. ignoring ...\n");
+        return 0;
+    }
 
-	unsigned int PacketLength = call->len;
-	if (initialHeader && call->private_size && call->private_data != NULL)
-	{
-		PacketLength += call->private_size;
-	}
+    mpeg4_printf(10, "VideoPts %lld\n", call->Pts);
 
-	struct iovec iov[3];
-	int ic = 0;
-	iov[ic].iov_base = PesHeader;
-	iov[ic++].iov_len = InsertPesHeader(PesHeader, PacketLength, MPEG_VIDEO_PES_START_CODE, call->Pts, 0);
 
-	if (initialHeader && call->private_size && call->private_data != NULL)
-	{
-		initialHeader = 0;
-		iov[ic].iov_base = call->private_data;
-		iov[ic++].iov_len = call->private_size;
-	}
-	iov[ic].iov_base = call->data;
-	iov[ic++].iov_len = call->len;
+    unsigned int PacketLength = call->len;
+    if (initialHeader && call->private_size && call->private_data != NULL)
+    {
+        PacketLength += call->private_size;
+    }
 
-	int len = call->WriteV(call->fd, iov, ic);
+    struct iovec iov[3];
+    int ic = 0;
+    iov[ic].iov_base = PesHeader;
+    iov[ic++].iov_len = InsertPesHeader (PesHeader, PacketLength, MPEG_VIDEO_PES_START_CODE, call->Pts, 0);
 
-	mpeg4_printf(10, "xvid_Write < len=%d\n", len);
+    if (initialHeader && call->private_size && call->private_data != NULL)
+    {
+        initialHeader = 0;
+        iov[ic].iov_base = call->private_data;
+        iov[ic++].iov_len = call->private_size;
+    }
+    iov[ic].iov_base = call->data;
+    iov[ic++].iov_len = call->len;
 
-	return len;
+    int len = call->WriteV(call->fd, iov, ic);
+
+    mpeg4_printf(10, "xvid_Write < len=%d\n", len);
+
+    return len;
 }
 
 /* ***************************** */
 /* Writer  Definition            */
 /* ***************************** */
 
-static WriterCaps_t mpeg4p2_caps =
-{
-	"mpeg4p2",
-	eVideo,
-	"V_MPEG4",
-	VIDEO_ENCODING_MPEG4P2,
-	STREAMTYPE_MPEG4_Part2,
-	-1
+static WriterCaps_t mpeg4p2_caps = {
+    "mpeg4p2",
+    eVideo,
+    "V_MPEG4",
+    VIDEO_ENCODING_MPEG4P2,
+    STREAMTYPE_MPEG4_Part2,
+    -1
 };
 
-struct Writer_s WriterVideoMPEG4 =
-{
-	&reset,
-	&writeData,
-	&mpeg4p2_caps
+struct Writer_s WriterVideoMPEG4 = {
+    &reset,
+    &writeData,
+    NULL,
+    &mpeg4p2_caps
 };
 
-static WriterCaps_t caps_h263 =
-{
-	"h263",
-	eVideo,
-	"V_H263",
-	VIDEO_ENCODING_H263,
-	STREAMTYPE_H263,
-	-1
+static WriterCaps_t caps_h263 = {
+    "h263",
+    eVideo,
+    "V_H263",
+    VIDEO_ENCODING_H263,
+    STREAMTYPE_H263,
+    -1
 };
 
-struct Writer_s WriterVideoH263 =
-{
-	&reset,
-	&writeData,
-	&caps_h263
+struct Writer_s WriterVideoH263 = {
+    &reset,
+    &writeData,
+    NULL,
+    &caps_h263
 };

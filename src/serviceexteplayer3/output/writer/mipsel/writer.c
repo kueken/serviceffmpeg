@@ -22,7 +22,6 @@
 /* ***************************** */
 /* Includes                      */
 /* ***************************** */
-
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -36,62 +35,58 @@
 /* ***************************** */
 /* Makros/Constants              */
 /* ***************************** */
-
 #define getDVBMutex(pmtx) do { if (pmtx) pthread_mutex_lock(pmtx);} while(false);
 #define releaseDVBMutex(pmtx) do { if (pmtx) pthread_mutex_unlock(pmtx);} while(false);
 
 /* ***************************** */
 /* Types                         */
 /* ***************************** */
-
-typedef enum
-{
-	DVB_STS_UNKNOWN,
-	DVB_STS_SEEK,
-	DVB_STS_PAUSE,
-	DVB_STS_EXIT
+typedef enum {
+    DVB_STS_UNKNOWN,
+    DVB_STS_SEEK,
+    DVB_STS_PAUSE,
+    DVB_STS_EXIT
 } DVBState_t;
 
 /* ***************************** */
-/* Variables                     */
+/* Varaibles                     */
 /* ***************************** */
 
-static Writer_t *AvailableWriter[] =
-{
-	&WriterAudioAAC,
-	&WriterAudioAACLATM,
-	&WriterAudioAACPLUS,
-	&WriterAudioAC3,
-	&WriterAudioEAC3,
-	&WriterAudioMP3,
-	&WriterAudioMPEGL3,
-	&WriterAudioPCM,
-	&WriterAudioIPCM,
-	&WriterAudioLPCM,
-	&WriterAudioDTS,
-	&WriterAudioWMA,
-	&WriterAudioWMAPRO,
-	&WriterAudioOPUS,
-	&WriterAudioVORBIS,
+static Writer_t * AvailableWriter[] = {
+    &WriterAudioAAC,
+    &WriterAudioAACLATM,
+    &WriterAudioAACPLUS,
+    &WriterAudioAC3,
+    &WriterAudioEAC3,
+    &WriterAudioMP3,
+    &WriterAudioMPEGL3,
+    &WriterAudioPCM,
+    &WriterAudioIPCM,
+    &WriterAudioLPCM,
+    &WriterAudioDTS,
+    &WriterAudioWMA,
+    &WriterAudioWMAPRO,
+    &WriterAudioOPUS,
+    &WriterAudioVORBIS,
 
-	&WriterVideoH264,
-	&WriterVideoH265,
-	&WriterVideoH263,
-	&WriterVideoMPEG4,
-	&WriterVideoMPEG2,
-	&WriterVideoMPEG1,
-	&WriterVideoVC1,
-	&WriterVideoDIVX3,
-	&WriterVideoVP6,
-	&WriterVideoVP8,
-	&WriterVideoVP9,
-	&WriterVideoFLV,
-	&WriterVideoWMV,
-	&WriterVideoMJPEG,
-	&WriterVideoRV40,
-	&WriterVideoRV30,
-	&WriterVideoAVS2,
-	NULL
+    &WriterVideoH264,
+    &WriterVideoH265,
+    &WriterVideoH263,
+    &WriterVideoMPEG4,
+    &WriterVideoMPEG2,
+    &WriterVideoMPEG1,
+    &WriterVideoVC1,
+    &WriterVideoDIVX3,
+    &WriterVideoVP6,
+    &WriterVideoVP8,
+    &WriterVideoVP9,
+    &WriterVideoFLV,
+    &WriterVideoWMV,
+    &WriterVideoMJPEG,
+    &WriterVideoRV40,
+    &WriterVideoRV30,
+    &WriterVideoAVS2,
+    NULL
 };
 
 /* ***************************** */
@@ -101,205 +96,206 @@ static Writer_t *AvailableWriter[] =
 /* ***************************** */
 /*  Functions                    */
 /* ***************************** */
-
-ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx __attribute__((unused)), const void *buf, int size)
+ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, const void *buf, int size)
 {
-	fd_set rfds;
-	fd_set wfds;
+    fd_set rfds;
+    fd_set wfds;
 
-	ssize_t ret;
-	int retval = -1;
-	int maxFd = pipefd > fd ? pipefd : fd;
-	struct timeval tv;
-	while (size > 0 && 0 == PlaybackDieNow(0) && !context->playback->isSeeking)
-	{
-		FD_ZERO(&rfds);
-		FD_ZERO(&wfds);
+    ssize_t ret;
+    int retval = -1;
+    int maxFd = pipefd > fd ? pipefd : fd;
+    struct timeval tv;
 
-		FD_SET(pipefd, &rfds);
-		FD_SET(fd, &wfds);
+    while(size > 0 && 0 == PlaybackDieNow(0) && !context->playback->isSeeking)
+    {
+        FD_ZERO(&rfds);
+        FD_ZERO(&wfds);
 
-		/* When we PAUSE LINUX DVB outputs buffers, then audio/video buffers
-		 * will continue to be filled. Unfortunately, in such case after resume
-		 * select() will never return with fd set - bug in DVB drivers?
-		 * There are to workarounds possible:
-		 *   1. write to pipe at resume to return from select() immediately
-		 *   2. make timeout select(), limit max time spend in the select()
-		 *      to for example 0,1s
-		 *   (at now first workaround is used)
-		 */
-		//tv.tv_sec = 0;
-		//tv.tv_usec = 100000; // 100ms
+        FD_SET(pipefd, &rfds);
+        FD_SET(fd, &wfds);
 
-		retval = select(maxFd + 1, &rfds, &wfds, NULL, NULL); //&tv);
-		if (retval < 0)
-		{
-			break;
-		}
+        /* When we PAUSE LINUX DVB outputs buffers, then audio/video buffers
+         * will continue to be filled. Unfortunately, in such case after resume
+         * select() will never return with fd set - bug in DVB drivers?
+         * There are to workarounds possible:
+         *   1. write to pipe at resume to return from select() immediately
+         *   2. make timeout select(), limit max time spend in the select()
+         *      to for example 0,1s
+         *   (at now first workaround is used)
+         */
+        //tv.tv_sec = 0;
+        //tv.tv_usec = 100000; // 100ms
 
-		//if (retval == 0)
-		//{
-		//	//printf("RETURN FROM SELECT DUE TO TIMEOUT\n");
-		//	continue;
-		//}
+        retval = select(maxFd + 1, &rfds, &wfds, NULL, NULL); //&tv);
+        if (retval < 0)
+        {
+            break;
+        }
 
-		if (FD_ISSET(pipefd, &rfds))
-		{
-			FlushPipe(pipefd);
-			//printf("RETURN FROM SELECT DUE TO pipefd SET\n");
-			continue;
-		}
+        //if (retval == 0)
+        //{
+        //    //printf("RETURN FROM SELECT DUE TO TIMEOUT\n");
+        //    continue;
+        //}
 
-		if (FD_ISSET(fd, &wfds))
-		{
-			ret = write(fd, buf, size);
-			if (ret < 0)
-			{
-				switch (errno)
-				{
-					case EINTR:
-					case EAGAIN:
-						continue;
-					default:
-						retval = -3;
-						break;
-				}
-				if (retval < 0)
-				{
-					break;
-				}
+        if(FD_ISSET(pipefd, &rfds))
+        {
+            FlushPipe(pipefd);
+            //printf("RETURN FROM SELECT DUE TO pipefd SET\n");
+            continue;
+        }
 
-				return ret;
-			}
-			else if (ret == 0)
-			{
-				// printf("This should not happen. Select return fd ready to write, but write return 0, errno [%d]\n", errno);
-				// wait 10ms before next try
-				tv.tv_sec = 0;
-				tv.tv_usec = 10000; // 10ms
-				retval = select(pipefd + 1, &rfds, NULL, NULL, &tv);
-				if (retval)
-					FlushPipe(pipefd);
-				continue;
-			}
+        if(FD_ISSET(fd, &wfds))
+        {
+            ret = write(fd, buf, size);
+            if (ret < 0)
+            {
+                switch(errno)
+                {
+                    case EINTR:
+                    case EAGAIN:
+                        continue;
+                    default:
+                        retval = -3;
+                        break;
+                }
+                if (retval < 0)
+                {
+                    break;
+                }
 
-			size -= ret;
-			buf += ret;
-		}
-	}
-	return 0;
+                return ret;
+            }
+            else if (ret == 0)
+            {
+                // printf("This should not happen. Select return fd ready to write, but write return 0, errno [%d]\n", errno);
+                // wait 10ms before next try
+                tv.tv_sec = 0;
+                tv.tv_usec = 10000; // 10ms
+                retval = select(pipefd + 1, &rfds, NULL, NULL, &tv);
+                if (retval)
+                    FlushPipe(pipefd);
+                continue;
+            }
+
+            size -= ret;
+            buf += ret;
+        }
+    }
+    return 0;
 }
 
 ssize_t write_with_retry(int fd, const void *buf, int size)
 {
-	ssize_t ret;
-	int retval = 0;
-	while (size > 0 && 0 == PlaybackDieNow(0))
-	{
-		ret = write(fd, buf, size);
-		if (ret < 0)
-		{
-			switch (errno)
-			{
-				case EINTR:
-				case EAGAIN:
-					usleep(1000);
-					continue;
-				default:
-					retval = -3;
-					break;
-			}
-			if (retval < 0)
-			{
-				break;
-			}
-		}
+    ssize_t ret;
+    int retval = 0;
+    while(size > 0 && 0 == PlaybackDieNow(0))
+    {
+        ret = write(fd, buf, size);
+        if (ret < 0)
+        {
+            switch(errno)
+            {
+                case EINTR:
+                case EAGAIN:
+                    usleep(1000);
+                    continue;
+                default:
+                    retval = -3;
+                    break;
+            }
+            if (retval < 0)
+            {
+                break;
+            }
+        }
 
-		if (ret < 0)
-		{
-			return ret;
-		}
+        if (ret < 0)
+        {
+            return ret;
+        }
 
-		size -= ret;
-		buf += ret;
+        size -= ret;
+        buf += ret;
 
-		if (size > 0)
-		{
-			if (usleep(1000))
-			{
-				writer_err("usleep error \n");
-			}
-		}
-	}
-	return 0;
+        if(size > 0)
+        {
+            if( usleep(1000) )
+            {
+                writer_err("usleep error \n");
+            }
+        }
+    }
+    return 0;
 }
 
 ssize_t writev_with_retry(int fd, const struct iovec *iov, int ic)
 {
-	ssize_t len = 0;
-	int i = 0;
-	for (i = 0; i < ic; ++i)
-	{
-		write_with_retry(fd, iov[i].iov_base, iov[i].iov_len);
-		len += iov[i].iov_len;
-		if (PlaybackDieNow(0))
-		{
-			return -1;
-		}
-	}
-	return len;
+    ssize_t len = 0;
+    int i = 0;
+    for(i=0; i<ic; ++i)
+    {
+        write_with_retry(fd, iov[i].iov_base, iov[i].iov_len);
+        len += iov[i].iov_len;
+        if(PlaybackDieNow(0))
+        {
+            return -1;
+        }
+    }
+    return len;
 }
 
-Writer_t *getWriter(char *encoding)
+Writer_t* getWriter(char* encoding)
 {
-	int i;
+    int i;
 
-	for (i = 0; AvailableWriter[i] != NULL; i++)
-	{
-		if (strcmp(AvailableWriter[i]->caps->textEncoding, encoding) == 0)
-		{
-			writer_printf(50, "%s: found writer \"%s\" for \"%s\"\n", __func__, AvailableWriter[i]->caps->name, encoding);
-			return AvailableWriter[i];
-		}
-	}
+    for (i = 0; AvailableWriter[i] != NULL; i++)
+    {
+        if (strcmp(AvailableWriter[i]->caps->textEncoding, encoding) == 0)
+        {
+            writer_printf(50, "%s: found writer \"%s\" for \"%s\"\n", __func__, AvailableWriter[i]->caps->name, encoding);
+            return AvailableWriter[i];
+        }
+    }
 
-	writer_printf(1, "%s: no writer found for \"%s\"\n", __func__, encoding);
+    writer_printf(1, "%s: no writer found for \"%s\"\n", __func__, encoding);
 
-	return NULL;
+    return NULL;
 }
 
-Writer_t *getDefaultVideoWriter()
+Writer_t* getDefaultVideoWriter()
 {
-	int i;
+    int i;
 
-	for (i = 0; AvailableWriter[i] != NULL; i++)
-	{
-		if (strcmp(AvailableWriter[i]->caps->textEncoding, "V_MPEG2") == 0)
-		{
-			writer_printf(50, "%s: found writer \"%s\"\n", __func__, AvailableWriter[i]->caps->name);
-			return AvailableWriter[i];
-		}
-	}
+    for (i = 0; AvailableWriter[i] != NULL; i++)
+    {
+        if (strcmp(AvailableWriter[i]->caps->textEncoding, "V_MPEG2") == 0)
+        {
+            writer_printf(50, "%s: found writer \"%s\"\n", __func__, AvailableWriter[i]->caps->name);
+            return AvailableWriter[i];
+        }
+    }
 
-	writer_printf(1, "%s: no writer found\n", __func__);
+    writer_printf(1, "%s: no writer found\n", __func__);
 
-	return NULL;
+    return NULL;
 }
 
-Writer_t *getDefaultAudioWriter()
+Writer_t* getDefaultAudioWriter()
 {
-	int i;
+    int i;
 
-	for (i = 0; AvailableWriter[i] != NULL; i++)
-	{
-		if (strcmp(AvailableWriter[i]->caps->textEncoding, "A_MP3") == 0)
-		{
-			writer_printf(50, "%s: found writer \"%s\"\n", __func__, AvailableWriter[i]->caps->name);
-			return AvailableWriter[i];
-		}
-	}
+    for (i = 0; AvailableWriter[i] != NULL; i++)
+    {
+        if (strcmp(AvailableWriter[i]->caps->textEncoding, "A_MP3") == 0)
+        {
+            writer_printf(50, "%s: found writer \"%s\"\n", __func__, AvailableWriter[i]->caps->name);
+            return AvailableWriter[i];
+        }
+    }
 
-	writer_printf(1, "%s: no writer found\n", __func__);
+    writer_printf(1, "%s: no writer found\n", __func__);
 
-	return NULL;
+    return NULL;
 }
+

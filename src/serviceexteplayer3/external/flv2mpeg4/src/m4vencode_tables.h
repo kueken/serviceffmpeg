@@ -1245,7 +1245,7 @@ static const uint32 uni_mpeg4_intra_rl_bits[] =
 	33546363, 33546365, 33546367
 };
 
-static const uint8 uni_mpeg4_intra_rl_len[] =
+static const uint8 uni_mpeg4_intra_rl_len[]=
 {
 	30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 21, 21, 21, 20, 20, 20, 20, 19, 19, 19, 19,
 	18, 18, 18, 18, 17, 17, 17, 16, 15, 15, 15, 14, 14, 13, 12, 11, 13, 13, 13, 12,

@@ -56,7 +56,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Variables                     */
+/* Varaibles                     */
 /* ***************************** */
 
 /* ***************************** */
@@ -69,95 +69,92 @@
 
 static int reset()
 {
-	return 0;
+    return 0;
 }
 
-static int writeData(void *_call)
+static int writeData(void* _call)
 {
-	WriterAVCallData_t *call = (WriterAVCallData_t *) _call;
+    WriterAVCallData_t* call = (WriterAVCallData_t*) _call;
 
-	unsigned char PesHeader[PES_MAX_HEADER_SIZE];
+    unsigned char  PesHeader[PES_MAX_HEADER_SIZE];
 
-	mp3_printf(10, "\n");
+    mp3_printf(10, "\n");
 
-	if (call == NULL)
-	{
-		mp3_err("call data is NULL...\n");
-		return 0;
-	}
+    if (call == NULL)
+    {
+        mp3_err("call data is NULL...\n");
+        return 0;
+    }
 
-	mp3_printf(10, "AudioPts %lld\n", call->Pts);
+    mp3_printf(10, "AudioPts %lld\n", call->Pts);
 
-	if ((call->data == NULL) || (call->len <= 0))
-	{
-		mp3_err("parsing NULL Data. ignoring...\n");
-		return 0;
-	}
+    if ((call->data == NULL) || (call->len <= 0))
+    {
+        mp3_err("parsing NULL Data. ignoring...\n");
+        return 0;
+    }
 
-	if (call->fd < 0)
-	{
-		mp3_err("file pointer < 0. ignoring ...\n");
-		return 0;
-	}
+    if (call->fd < 0)
+    {
+        mp3_err("file pointer < 0. ignoring ...\n");
+        return 0;
+    }
 
-	struct iovec iov[2];
-	iov[0].iov_base = PesHeader;
-	iov[0].iov_len = InsertPesHeader(PesHeader, call->len, MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
-	iov[1].iov_base = call->data;
-	iov[1].iov_len = call->len;
+    struct iovec iov[2];
+    iov[0].iov_base = PesHeader;
+    iov[0].iov_len = InsertPesHeader (PesHeader, call->len , MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
+    iov[1].iov_base = call->data;
+    iov[1].iov_len = call->len;
 
-	int len = call->WriteV(call->fd, iov, 2);
+    int len = call->WriteV(call->fd, iov, 2);
 
-	mp3_printf(10, "mp3_Write-< len=%d\n", len);
-	return len;
+    mp3_printf(10, "mp3_Write-< len=%d\n", len);
+    return len;
 }
 
 /* ***************************** */
 /* Writer  Definition            */
 /* ***************************** */
 
-static WriterCaps_t caps_mp3 =
-{
-	"mp3",
-	eAudio,
-	"A_MP3",
-	AUDIO_ENCODING_MP3
+static WriterCaps_t caps_mp3 = {
+    "mp3",
+    eAudio,
+    "A_MP3",
+    AUDIO_ENCODING_MP3
 };
 
-struct Writer_s WriterAudioMP3 =
-{
-	&reset,
-	&writeData,
-	&caps_mp3
+struct Writer_s WriterAudioMP3 = {
+    &reset,
+    &writeData,
+    NULL,
+    &caps_mp3
 };
 
-static WriterCaps_t caps_mpegl3 =
-{
-	"mpeg/l3",
-	eAudio,
-	"A_MPEG/L3",
-	AUDIO_ENCODING_MPEG2
+static WriterCaps_t caps_mpegl3 = {
+    "mpeg/l3",
+    eAudio,
+    "A_MPEG/L3",
+    AUDIO_ENCODING_MPEG2
 };
 
-struct Writer_s WriterAudioMPEGL3 =
-{
-	&reset,
-	&writeData,
-	&caps_mpegl3
+struct Writer_s WriterAudioMPEGL3 = {
+    &reset,
+    &writeData,
+    NULL,
+    &caps_mpegl3
 };
 
-static WriterCaps_t caps_vorbis =
-{
-	"vorbis",
-	eAudio,
-	"A_VORBIS",
-	AUDIO_ENCODING_VORBIS
+static WriterCaps_t caps_vorbis = {
+    "vorbis",
+    eAudio,
+    "A_VORBIS",
+    AUDIO_ENCODING_VORBIS
 };
 
-struct Writer_s WriterAudioVORBIS =
-{
-	&reset,
-	&writeData,
-	&caps_vorbis
+struct Writer_s WriterAudioVORBIS = {
+    &reset,
+    &writeData,
+    NULL,
+    &caps_vorbis
 };
 

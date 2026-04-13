@@ -31,117 +31,117 @@
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 typedef struct _BR
 {
-	const uint8 *buf;
-	uint32 size;
-	uint32 read;
-	int bitoffset;
+  const uint8* buf;
+  uint32 size;
+  uint32 read;
+  int bitoffset;
 } BR;
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-static inline void init_br(BR *p, const uint8 *buf, uint32 size)
+static void init_br(BR* p, const uint8* buf, uint32 size)
 {
-	p->buf = buf;
-	p->size = size;
-	p->read = 0;
-	p->bitoffset = 0;
+  p->buf = buf;
+  p->size = size;
+  p->read = 0;
+  p->bitoffset = 0;
 }
 
-static uint8 get_u8(BR *p)
+static uint8 get_u8(BR* p)
 {
-	return p->buf[p->read++];
+  return p->buf[p->read++];
 }
 
-static inline uint32 get_u24(BR *p)
+static uint32 get_u24(BR* p)
 {
-	uint32 a = get_u8(p);
-	uint32 b = get_u8(p);
-	uint32 c = get_u8(p);
+  uint32 a = get_u8(p);
+  uint32 b = get_u8(p);
+  uint32 c = get_u8(p);
 
-	return (a << 16) | (b << 8) | c;
+  return (a << 16) | (b << 8) | c;
 }
 
-static inline uint32 get_u32(BR *p)
+static uint32 get_u32(BR* p)
 {
-	uint32 a = get_u8(p);
-	uint32 b = get_u8(p);
-	uint32 c = get_u8(p);
-	uint32 d = get_u8(p);
+  uint32 a = get_u8(p);
+  uint32 b = get_u8(p);
+  uint32 c = get_u8(p);
+  uint32 d = get_u8(p);
 
-	return (a << 24) | (b << 16) | (c << 8) | d;
+  return (a << 24) | (b << 16) | (c << 8) | d;
 }
 
-static inline int is_eob(BR *p)
+static int is_eob(BR* p)
 {
-	return p->read >= p->size;
+  return p->read >= p->size;
 }
 
-static inline void skip(BR *p, uint32 skip)
+static void skip(BR* p, uint32 skip)
 {
-	p->read += skip;
+  p->read += skip;
 }
 
-static uint32 show_bits(BR *p, uint32 bits)
+static uint32 show_bits(BR* p, uint32 bits)
 {
-	const uint8 *pp;
-	uint32 tmp;
+  const uint8* pp;
+  uint32 tmp;
 
-	pp = p->buf + p->read;
-	tmp = (pp[0] << 24) | (pp[1] << 16) | (pp[2] << 8) | (pp[3]);
-	tmp <<= p->bitoffset;
-	tmp >>= 32 - bits;
+  pp = p->buf + p->read;
+  tmp = (pp[0] << 24) | (pp[1] << 16) | (pp[2] << 8 ) | (pp[3]);
+  tmp <<= p->bitoffset;
+  tmp >>= 32 - bits;
 
-	return tmp;
+  return tmp;
 }
 
-static inline int32 show_sbits(BR *p, uint32 bits)
+static int32 show_sbits(BR* p, uint32 bits)
 {
-	const uint8 *pp;
-	int32 tmp;
+  const uint8* pp;
+  int32 tmp;
 
-	pp = p->buf + p->read;
-	tmp = (pp[0] << 24) | (pp[1] << 16) | (pp[2] << 8) | (pp[3]);
-	tmp <<= p->bitoffset;
-	tmp >>= 32 - bits;
+  pp = p->buf + p->read;
+  tmp = (pp[0] << 24) | (pp[1] << 16) | (pp[2] << 8 ) | (pp[3]);
+  tmp <<= p->bitoffset;
+  tmp >>= 32 - bits;
 
-	return tmp;
+  return tmp;
 }
 
-static inline void flash_bits(BR *p, uint32 bits)
+static void flash_bits(BR* p, uint32 bits)
 {
-	if (bits > 0)
-	{
-		bits = bits + p->bitoffset;
-		p->read += bits >> 3;
-		p->bitoffset = bits & 7;
-	}
+  if (bits > 0)
+  {
+    bits = bits + p->bitoffset;
+	p->read += bits >> 3;
+	p->bitoffset = bits & 7;
+  }
 }
 
-static inline uint32 get_bits(BR *p, uint32 bits)
+static uint32 get_bits(BR* p, uint32 bits)
 {
-	uint32 tmp = show_bits(p, bits);
-	flash_bits(p, bits);
-	return tmp;
+  uint32 tmp = show_bits(p, bits);
+  flash_bits(p, bits);
+  return tmp;
 }
 
-static inline int32 get_sbits(BR *p, uint32 bits)
+static int32 get_sbits(BR* p, uint32 bits)
 {
-	int32 tmp = show_sbits(p, bits);
-	flash_bits(p, bits);
-	return tmp;
+  int32 tmp = show_sbits(p, bits);
+  flash_bits(p, bits);
+  return tmp;
 }
 
-static inline void align_bits(BR *p)
+static void align_bits(BR* p)
 {
-	if (p->bitoffset > 0)
-	{
-		p->bitoffset = 0;
-		p->read++;
-	}
+  if (p->bitoffset > 0)
+  {
+    p->bitoffset = 0;
+	p->read++;
+  }
 }
 
-static inline int get_br_pos(BR *p)
+static int __inline get_br_pos(BR* p)
 {
-	return (p->read << 3) + p->bitoffset;
+  return (p->read << 3) + p->bitoffset;
 }
 
 typedef struct _VLCtab
@@ -150,7 +150,7 @@ typedef struct _VLCtab
 	int n;
 } VLCtab;
 
-static inline int get_vlc(BR *br, const VLCtab *table, int bits, int max_depth)
+static int __inline get_vlc(BR* br, const VLCtab* table, int bits, int max_depth)
 {
 	int n, index, nb_bits, code;
 	index = show_bits(br, bits);
@@ -171,16 +171,16 @@ static inline int get_vlc(BR *br, const VLCtab *table, int bits, int max_depth)
 	return code;
 }
 
-static inline int get_vlcdec(BR *p, const VLCtab *table, int bits, int max_depth, VLCDEC *vlcdec)
+static int __inline get_vlcdec(BR* p, const VLCtab* table, int bits, int max_depth, VLCDEC* vlcdec)
 {
-	int pos = get_br_pos(p);
-	uint32 show = show_bits(p, 24);
-	uint32 tmp = get_vlc(p, table, bits, max_depth);
-	int len = get_br_pos(p) - pos;
-	int val = show >> (24 - len);
-	vlcdec->bits = len;
-	vlcdec->value = val;
-	return tmp;
+  int pos = get_br_pos(p);
+  uint32 show = show_bits(p, 24);
+  uint32 tmp = get_vlc(p, table, bits, max_depth);
+  int len = get_br_pos(p) - pos;
+  int val = show >> (24 - len);
+  vlcdec->bits = len;
+  vlcdec->value = val;
+  return tmp;
 }
 
 #endif // BITREADER_H

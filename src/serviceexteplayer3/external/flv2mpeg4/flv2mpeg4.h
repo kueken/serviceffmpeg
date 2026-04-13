@@ -26,14 +26,14 @@
 #include <stdint.h>
 
 typedef int (*flv2mpeg4_write_packet_cb)(void *usr_data, int keyframe, int pts, const uint8_t *buf, int size);
-typedef int (*flv2mpeg4_write_extradata_cb)(void *usr_data, int width, int height, int bitrate, const uint8_t *extradata, int extradatasize);
+typedef int (*flv2mpeg4_write_extradata_cb)(void *usr_data, int width, int height, int bitrate, const uint8_t* extradata, int extradatasize);
 
 typedef struct
 {
-	flv2mpeg4_write_packet_cb write_packet_cb;
-	flv2mpeg4_write_extradata_cb write_extradata_cb;
-	void *usr_data;
-	void *priv;
+    flv2mpeg4_write_packet_cb write_packet_cb;
+    flv2mpeg4_write_extradata_cb write_extradata_cb;
+    void *usr_data;
+    void *priv;
 } flv2mpeg4_CTX;
 
 flv2mpeg4_CTX *flv2mpeg4_init_ctx(void *priv_data, int width, int height, flv2mpeg4_write_packet_cb wp_cb, flv2mpeg4_write_extradata_cb we_cb);

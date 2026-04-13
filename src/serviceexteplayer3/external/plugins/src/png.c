@@ -21,7 +21,6 @@
 /* ***************************** */
 /* Includes                      */
 /* ***************************** */
-
 #include <stdio.h>
 #include <dlfcn.h>
 #include "plugins/png.h"
@@ -30,51 +29,51 @@
 static void *handle;
 int (*SaveRGBAImage_handle)(const char *filename, const unsigned char *data, int width, int height);
 
+
 int PNGPlugin_saveRGBAImage(const char *filename, const unsigned char *data, int width, int height)
 {
-	if (SaveRGBAImage_handle != NULL)
-		return SaveRGBAImage_handle(filename, data, width, height);
-
-	return -1;
+    if (SaveRGBAImage_handle != NULL)
+        return SaveRGBAImage_handle(filename, data, width, height);
+    return -1;
 }
 
 int PNGPlugin_init(void)
 {
-	if (NULL != handle)
-		return 0; /* Already initialized */
-	else
-	{
-		handle = dlopen("exteplayer3png.so", RTLD_LAZY);
-		if (handle)
-		{
-			char *error = NULL;
-			dlerror();    /* Clear any existing error */
-			*(void **)(&SaveRGBAImage_handle) = dlsym(handle, "SaveRGBAImage");
+    if (NULL != handle)
+        return 0; /* Already initialized */
+    else
+    {
+        handle = dlopen("exteplayer3png.so", RTLD_LAZY);
+        if (handle)
+        {
+            char *error = NULL;
 
-			if ((error = dlerror()) != NULL)
-			{
-				dlclose(handle);
-				plugin_err("%s\n", error);
-				return -2;
-			}
+            dlerror();    /* Clear any existing error */
 
-			return 0;
-		}
-		plugin_err("%s\n", dlerror());
-	}
+            *(void **) (&SaveRGBAImage_handle) = dlsym(handle, "SaveRGBAImage");
 
-	return -1;
+            if ((error = dlerror()) != NULL)
+            {
+                dlclose(handle);
+                plugin_err("%s\n", error);
+                return -2;
+            }
+            return 0;
+        }
+        plugin_err( "%s\n", dlerror());
+    }
+
+    return -1;
 }
 
 int PNGPlugin_term(void)
 {
-	if (handle)
-	{
-		dlclose(handle);
-		handle = NULL;
-		SaveRGBAImage_handle = NULL;
-		return 0;
-	}
-
-	return -1;
+    if (handle)
+    {
+        dlclose(handle);
+        handle = NULL;
+        SaveRGBAImage_handle = NULL;
+        return 0;
+    }
+    return -1;
 }

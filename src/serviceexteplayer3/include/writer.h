@@ -7,42 +7,40 @@
 #include "common.h"
 
 typedef enum { eNone, eAudio, eVideo} eWriterType_t;
-typedef ssize_t (* WriteV_t)(int, const struct iovec *, int);
+typedef ssize_t (* WriteV_t) (int, const struct iovec *, int);
 
-typedef struct
-{
-	int                    fd;
-	uint8_t               *data;
-	unsigned int           len;
-	uint64_t               Pts;
-	unsigned long long int Dts;
-	uint8_t               *private_data;
-	unsigned int           private_size;
-	unsigned int           FrameRate;
-	unsigned int           FrameScale;
-	unsigned int           Width;
-	unsigned int           Height;
-	unsigned char          Version;
-	unsigned int           InfoFlags;
-	WriteV_t               WriteV;
+typedef struct {
+    int                    fd;
+    unsigned char*         data;
+    unsigned int           len;
+    unsigned long long int Pts;
+    unsigned long long int Dts;
+    unsigned char*         private_data;
+    unsigned int           private_size;
+    unsigned int           FrameRate;
+    unsigned int           FrameScale;
+    unsigned int           Width;
+    unsigned int           Height;
+    unsigned char          Version;
+    unsigned int           InfoFlags;
+    WriteV_t               WriteV;
 } WriterAVCallData_t;
 
-typedef struct WriterCaps_s
-{
-	char          *name;
-	eWriterType_t  type;
-	char          *textEncoding;
-	/* fixme: revise if this is an enum! */
-	int            dvbEncoding;   /* For sh4    */
-	int            dvbStreamType; /* For mipsel */
-	int            dvbCodecType;  /* For mipsel */
+typedef struct WriterCaps_s {
+    char*          name;
+    eWriterType_t  type;
+    char*          textEncoding;
+    /* fixme: revise if this is an enum! */
+    int            dvbEncoding;   /* For sh4    */
+    int            dvbStreamType; /* For mipsel */
+    int            dvbCodecType;  /* For mipsel */
 } WriterCaps_t;
 
-typedef struct Writer_s
-{
-	int (* reset)();
-	int (* writeData)(WriterAVCallData_t *);
-	WriterCaps_t *caps;
+typedef struct Writer_s {
+    int           (* reset) ();
+    int           (* writeData) (void*);
+    int           (* writeReverseData) (void*);
+    WriterCaps_t *caps;
 } Writer_t;
 
 extern Writer_t WriterAudioLPCM;
@@ -87,10 +85,10 @@ extern Writer_t WriterVideoRV30;
 extern Writer_t WriterVideoRV40;
 extern Writer_t WriterVideoAVS2;
 
-Writer_t *getWriter(char *encoding);
+Writer_t* getWriter(char* encoding);
 
-Writer_t *getDefaultVideoWriter();
-Writer_t *getDefaultAudioWriter();
+Writer_t* getDefaultVideoWriter();
+Writer_t* getDefaultAudioWriter();
 ssize_t write_with_retry(int fd, const void *buf, int size);
 ssize_t writev_with_retry(int fd, const struct iovec *iov, int ic);
 
@@ -101,40 +99,38 @@ ssize_t WriteExt(WriteV_t _call, int fd, void *data, size_t size);
 
 // Subtitles
 
-typedef enum
-{
-	SUBTITLE_CODEC_ID_UNKNOWN,
-	SUBTITLE_CODEC_ID_SUBRIP,
-	SUBTITLE_CODEC_ID_ASS,
-	SUBTITLE_CODEC_ID_WEBVTT,
-	SUBTITLE_CODEC_ID_PGS,
-	SUBTITLE_CODEC_ID_DVB,
-	SUBTITLE_CODEC_ID_XSUB
+typedef enum {
+    SUBTITLE_CODEC_ID_UNKNOWN,
+    SUBTITLE_CODEC_ID_SUBRIP,
+    SUBTITLE_CODEC_ID_ASS,
+    SUBTITLE_CODEC_ID_WEBVTT,
+    SUBTITLE_CODEC_ID_PGS,
+    SUBTITLE_CODEC_ID_DVB,
+    SUBTITLE_CODEC_ID_XSUB,
+    SUBTITLE_CODEC_ID_MOV_TEXT
 } SubtitleCodecId_t;
 
-typedef struct
-{
-	SubtitleCodecId_t codecId;
-	uint32_t  trackId;
-	uint8_t  *data;
-	uint32_t  len;
-	int64_t   pts;
-	int64_t   dts;
-	uint8_t  *private_data;
-	uint32_t  private_size;
+typedef struct {
+    SubtitleCodecId_t codecId;
+    uint32_t          trackId;
+    uint8_t           *data;
+    uint32_t          len;
+    int64_t           pts;
+    int64_t           dts;
+    uint8_t           *private_data;
+    uint32_t          private_size;
 
-	int64_t           durationMS; // duration in miliseconds
+    int64_t           durationMS; // duration in miliseconds
 
-	int width;
-	int height;
+    uint32_t         width;
+    uint32_t         height;
 } WriterSubCallData_t;
 
-typedef struct SubWriter_s
-{
-	int32_t (* open)(SubtitleCodecId_t codecId, uint8_t *extradata, int extradata_size);
-	int32_t (* close)();
-	int32_t (* reset)();
-	int32_t (* write)(WriterSubCallData_t *);
+typedef struct SubWriter_s {
+    int32_t           (* open) (SubtitleCodecId_t codecId, uint8_t *extradata, int extradata_size);
+    int32_t           (* close) ();
+    int32_t           (* reset) ();
+    int32_t           (* write) (WriterSubCallData_t *);
 } SubWriter_t;
 
 extern SubWriter_t WriterSubPGS;

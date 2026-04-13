@@ -25,21 +25,20 @@
 
 #include "dcprediction.h"
 
+
 // M4V ADDED
-static const uint8 mpeg4_y_dc_scale_table[32] =
-{
+static const uint8 mpeg4_y_dc_scale_table[32]={
 //  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
-	0, 8, 8, 8, 8, 10, 12, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 34, 36, 38, 40, 42, 44, 46
+    0, 8, 8, 8, 8,10,12,14,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,34,36,38,40,42,44,46
 };
 
 // M4V ADDED
-static const uint8 mpeg4_c_dc_scale_table[32] =
-{
+static const uint8 mpeg4_c_dc_scale_table[32]={
 //  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
-	0, 8, 8, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15, 16, 16, 17, 17, 18, 18, 19, 20, 21, 22, 23, 24, 25
+    0, 8, 8, 8, 8, 9, 9,10,10,11,11,12,12,13,13,14,14,15,15,16,16,17,17,18,18,19,20,21,22,23,24,25
 };
 
-static inline int get_pred(int *dc_cur, int stride, int scale)
+static int __inline get_pred(int* dc_cur, int stride, int scale)
 {
 	/* B C
 	   A X */
@@ -61,7 +60,7 @@ static inline int get_pred(int *dc_cur, int stride, int scale)
 	return (pred + (scale >> 1)) / scale;
 }
 
-static inline void set_dc_to_dc_cur(int *dc_cur, int level, int scale)
+static void __inline set_dc_to_dc_cur(int *dc_cur, int level, int scale)
 {
 	level *= scale;
 	if (level & (~2047))
@@ -75,7 +74,7 @@ static inline void set_dc_to_dc_cur(int *dc_cur, int level, int scale)
 	dc_cur[0] = level;
 }
 
-static int *get_dc_cur(M4V_DCPRED *pred, int mb_x, int mb_y, int n)
+static int* get_dc_cur(M4V_DCPRED* pred, int mb_x, int mb_y, int n)
 {
 	if (n < 4)
 	{
@@ -87,7 +86,7 @@ static int *get_dc_cur(M4V_DCPRED *pred, int mb_x, int mb_y, int n)
 	}
 }
 
-static inline int get_scale(M4V_DCPRED *pred, int n)
+static int __inline get_scale(M4V_DCPRED* pred, int n)
 {
 	if (n < 4)
 	{
@@ -100,17 +99,15 @@ static inline int get_scale(M4V_DCPRED *pred, int n)
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void dcpred_set_qscale(M4V_DCPRED *pred, int qscale)
+void dcpred_set_qscale(M4V_DCPRED* pred, int qscale)
 {
-	if (qscale < 0)
-		qscale = 0;
-	if (qscale > 31)
-		qscale = 31;
+	if (qscale < 0) qscale = 0;
+	if (qscale > 31) qscale = 31;
 	pred->y_dc_scale = mpeg4_y_dc_scale_table[qscale];
 	pred->c_dc_scale = mpeg4_c_dc_scale_table[qscale];
 }
 
-void dcpred_set_pos(M4V_DCPRED *pred, int mb_x, int mb_y)
+void dcpred_set_pos(M4V_DCPRED* pred, int mb_x, int mb_y)
 {
 	int n;
 	for (n = 0; n < 6; n++)
@@ -119,9 +116,9 @@ void dcpred_set_pos(M4V_DCPRED *pred, int mb_x, int mb_y)
 	}
 }
 
-int dcpred_for_enc(M4V_DCPRED *p, int n, int level)
+int dcpred_for_enc(M4V_DCPRED* p, int n, int level)
 {
-	int *dc_cur = p->dc_cur[n];
+	int* dc_cur = p->dc_cur[n];
 	int scale = get_scale(p, n);
 	int pred = get_pred(dc_cur, p->stride[n], scale);
 
@@ -129,9 +126,9 @@ int dcpred_for_enc(M4V_DCPRED *p, int n, int level)
 	return level - pred;
 }
 
-int dcpred_for_dec(M4V_DCPRED *p, int n, int level)
+int dcpred_for_dec(M4V_DCPRED* p, int n, int level)
 {
-	int *dc_cur = p->dc_cur[n];
+	int* dc_cur = p->dc_cur[n];
 	int scale = get_scale(p, n);
 	int pred = get_pred(dc_cur, p->stride[n], scale);
 
@@ -141,10 +138,10 @@ int dcpred_for_dec(M4V_DCPRED *p, int n, int level)
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-static void init_plane(M4V_DCPRED *pred, int n)
+static void init_plane(M4V_DCPRED* pred, int n)
 {
-	int x, len = pred->stride[n] * pred->height[n];
-	int *p = pred->_dc[n];
+	int x, len = pred->stride[n]*pred->height[n];
+	int* p = pred->_dc[n];
 
 	for (x = 0; x < len; x++)
 	{
@@ -152,23 +149,23 @@ static void init_plane(M4V_DCPRED *pred, int n)
 	}
 }
 
-void init_dcpred(M4V_DCPRED *pred)
+void init_dcpred(M4V_DCPRED* pred)
 {
 	init_plane(pred, 0);
 	init_plane(pred, 4);
 	init_plane(pred, 5);
 }
 
-void alloc_dcpred(M4V_DCPRED *pred, int mb_width, int mb_height)
+void alloc_dcpred(M4V_DCPRED* pred, int mb_width, int mb_height)
 {
 	const int w2 = mb_width  * 2 + 1;
 	const int h2 = mb_height * 2 + 1;
 	const int w = mb_width      + 1;
 	const int h = mb_height     + 1;
 
-	pred->_dc[0] = pred->_dc[1] = pred->_dc[2] = pred->_dc[3] = (int *)malloc(sizeof(int) * w2 * h2);
-	pred->_dc[4] = (int *)malloc(sizeof(int) * w * h);
-	pred->_dc[5] = (int *)malloc(sizeof(int) * w * h);
+	pred->_dc[0] = pred->_dc[1] = pred->_dc[2] = pred->_dc[3] = (int*)malloc(sizeof(int) * w2 * h2);
+	pred->_dc[4] = (int*)malloc(sizeof(int) * w * h);
+	pred->_dc[5] = (int*)malloc(sizeof(int) * w * h);
 
 	pred->dc[0] = pred->dc[1] = pred->dc[2] = pred->dc[3] = pred->_dc[0] + w2 + 1;
 	pred->dc[4] = pred->_dc[4] + w + 1;
@@ -187,7 +184,7 @@ void alloc_dcpred(M4V_DCPRED *pred, int mb_width, int mb_height)
 	pred->block_offset[5] = 0;
 }
 
-void free_dcpred(M4V_DCPRED *pred)
+void free_dcpred(M4V_DCPRED* pred)
 {
 	free(pred->_dc[0]);
 	free(pred->_dc[4]);

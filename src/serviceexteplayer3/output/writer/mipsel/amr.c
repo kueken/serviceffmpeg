@@ -59,7 +59,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Variables                     */
+/* Varaibles                     */
 /* ***************************** */
 
 /* ***************************** */
@@ -72,77 +72,79 @@
 
 static int reset()
 {
-	return 0;
+    return 0;
 }
 
-static int writeData(WriterAVCallData_t *call)
+static int writeData(void *_call)
 {
-	uint8_t PesHeader[PES_MAX_HEADER_SIZE + 4 + 9];
+    WriterAVCallData_t* call = (WriterAVCallData_t*) _call;
 
-	amr_printf(10, "\n");
+    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 4 + 9];
 
-	if (call == NULL || call->data == NULL || call->len <= 0 || call->fd < 0)
-	{
-		amr_err("call error wrong data call: %p, data: %p, len: %d, fd: %d\n", call, call->data, call->len, call->fd);
-		return 0;
-	}
+    amr_printf(10, "\n");
 
-	amr_printf(10, "AudioPts %lld\n", call->Pts);
-	size_t payload_len = call->len;
-	bool hasCodecData = true;
+    if (call == NULL || call->data == NULL || call->len <= 0 || call->fd < 0) {
+        amr_err("call error wrong data call: %p, data: %p, len: %d, fd: %d\n", call, call->data, call->len, call->fd);
+        return 0;
+    }
 
-	if (NULL != call->private_data && call->private_size >= 17)
-	{
-		amr_err("wrong private_data. ignoring ...\n");
-		hasCodecData = false;
-	}
+    amr_printf(10, "AudioPts %lld\n", call->Pts);
 
-	if (hasCodecData)
-	{
-		payload_len += 9;
-	}
-	payload_len += 4;
+    size_t payload_len = call->len;
+    bool hasCodecData = true;
+    if(NULL != call->private_data && call->private_size >= 17)
+    {
+        amr_err("wrong private_data. ignoring ...\n");
+        hasCodecData = false;
+    }
 
-	uint32_t headerSize = InsertPesHeader(PesHeader, payload_len, MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
-	PesHeader[headerSize++] = (payload_len >> 24) & 0xff;
-	PesHeader[headerSize++] = (payload_len >> 16) & 0xff;
-	PesHeader[headerSize++] = (payload_len >> 8)  & 0xff;
-	PesHeader[headerSize++] = payload_len & 0xff;
+    if(hasCodecData) {
+        payload_len += 9;
+    }
 
-	if (hasCodecData)
-	{
-		memcpy(&PesHeader[headerSize], call->private_data + 8, 9);
-	}
+    payload_len += 4;
 
-	struct iovec iov[2];
-	iov[0].iov_base = PesHeader;
-	iov[0].iov_len = headerSize;
-	iov[1].iov_base = call->data;
-	iov[1].iov_len = call->len;
+    uint32_t headerSize = InsertPesHeader(PesHeader, payload_len, MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
 
-	int len = call->WriteV(call->fd, iov, 2);
+    PesHeader[headerSize++] = (payload_len >> 24) & 0xff;
+    PesHeader[headerSize++] = (payload_len >> 16) & 0xff;
+    PesHeader[headerSize++] = (payload_len >> 8)  & 0xff;
+    PesHeader[headerSize++] = payload_len & 0xff;
 
-	amr_printf(10, "amr_Write-< len=%d\n", len);
-	return len;
+    if (hasCodecData) {
+        memcpy(&PesHeader[headerSize], call->private_data + 8, 9);
+    }
+
+    struct iovec iov[2];
+    iov[0].iov_base = PesHeader;
+    iov[0].iov_len = headerSize;
+    iov[1].iov_base = call->data;
+    iov[1].iov_len = call->len;
+
+    int len = call->WriteV(call->fd, iov, 2);
+
+    amr_printf(10, "amr_Write-< len=%d\n", len);
+    return len;
 }
 
 /* ***************************** */
 /* Writer  Definition            */
 /* ***************************** */
 
-static WriterCaps_t caps_amr =
-{
-	"amr",
-	eAudio,
-	"A_AMR",
-	-1,
-	AUDIOTYPE_AMR,
-	-1
+static WriterCaps_t caps_amr = {
+    "amr",
+    eAudio,
+    "A_AMR",
+    -1,
+    AUDIOTYPE_AMR,
+    -1
 };
 
-struct Writer_s WriterAudioAMR =
-{
-	&reset,
-	&writeData,
-	&caps_amr
+struct Writer_s WriterAudioAMR = {
+    &reset,
+    &writeData,
+    NULL,
+    &caps_amr
 };
+
+

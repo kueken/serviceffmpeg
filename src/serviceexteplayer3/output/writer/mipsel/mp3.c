@@ -58,7 +58,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Variables                     */
+/* Varaibles                     */
 /* ***************************** */
 
 /* ***************************** */
@@ -71,76 +71,76 @@
 
 static int reset()
 {
-	return 0;
+    return 0;
 }
 
-static int writeData(WriterAVCallData_t *call)
+static int writeData(void* _call)
 {
-	unsigned char PesHeader[PES_MAX_HEADER_SIZE + 22];
+    WriterAVCallData_t* call = (WriterAVCallData_t*) _call;
 
-	mp3_printf(10, "\n");
+    unsigned char  PesHeader[PES_MAX_HEADER_SIZE + 22];
 
-	if (call == NULL || call->data == NULL || call->len <= 0 || call->fd < 0)
-	{
-		mp3_err("Wrong input call: %p, data: %p, len: %d, fd: %d\n", call, call->data, call->len, call->fd);
-		return 0;
-	}
+    mp3_printf(10, "\n");
 
-	mp3_printf(10, "AudioPts %lld\n", call->Pts);
-	call->private_size = 0;
+    if (call == NULL || call->data == NULL || call->len <= 0 || call->fd < 0) {
+        wma_err("Wrong input call: %p, data: %p, len: %d, fd: %d\n", call, call->data, call->len, call->fd);
+        return 0;
+    }
 
-	uint32_t headerSize = InsertPesHeader(PesHeader, call->len + call->private_size, MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
-	if (call->private_size > 0)
-	{
-		memcpy(&PesHeader[headerSize], call->private_data, call->private_size);
-		headerSize += call->private_size;
-	}
-	struct iovec iov[2];
-	iov[0].iov_base = PesHeader;
-	iov[0].iov_len = headerSize;
-	iov[1].iov_base = call->data;
-	iov[1].iov_len = call->len;
+    mp3_printf(10, "AudioPts %lld\n", call->Pts);
 
-	int len = call->WriteV(call->fd, iov, 2);
+    call->private_size = 0;
 
-	mp3_printf(10, "mp3_Write-< len=%d\n", len);
-	return len;
+    uint32_t headerSize = InsertPesHeader (PesHeader, call->len + call->private_size, MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
+    if(call->private_size > 0)
+    {
+        memcpy(&PesHeader[headerSize], call->private_data, call->private_size);
+        headerSize += call->private_size;
+    }
+    struct iovec iov[2];
+    iov[0].iov_base = PesHeader;
+    iov[0].iov_len = headerSize;
+    iov[1].iov_base = call->data;
+    iov[1].iov_len = call->len;
+
+    int len = call->WriteV(call->fd, iov, 2);
+
+    mp3_printf(10, "mp3_Write-< len=%d\n", len);
+    return len;
 }
 
 /* ***************************** */
 /* Writer  Definition            */
 /* ***************************** */
 
-static WriterCaps_t caps_mp3 =
-{
-	"mp3",
-	eAudio,
-	"A_MP3",
-	AUDIO_ENCODING_MP3,
-	AUDIOTYPE_MP3,
-	-1
+static WriterCaps_t caps_mp3 = {
+    "mp3",
+    eAudio,
+    "A_MP3",
+    AUDIO_ENCODING_MP3,
+    AUDIOTYPE_MP3,
+    -1
 };
 
-struct Writer_s WriterAudioMP3 =
-{
-	&reset,
-	&writeData,
-	&caps_mp3
+struct Writer_s WriterAudioMP3 = {
+    &reset,
+    &writeData,
+    NULL,
+    &caps_mp3
 };
 
-static WriterCaps_t caps_mpegl3 =
-{
-	"mpeg/l3",
-	eAudio,
-	"A_MPEG/L3",
-	AUDIO_ENCODING_MPEG2,
-	AUDIOTYPE_MP3,
-	-1
+static WriterCaps_t caps_mpegl3 = {
+    "mpeg/l3",
+    eAudio,
+    "A_MPEG/L3",
+    AUDIO_ENCODING_MPEG2,
+    AUDIOTYPE_MP3,
+    -1
 };
 
-struct Writer_s WriterAudioMPEGL3 =
-{
-	&reset,
-	&writeData,
-	&caps_mpegl3
+struct Writer_s WriterAudioMPEGL3 = {
+    &reset,
+    &writeData,
+    NULL,
+    &caps_mpegl3
 };

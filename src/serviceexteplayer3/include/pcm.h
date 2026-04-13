@@ -24,21 +24,20 @@
 
 typedef struct pcmPrivateData_s
 {
-	uint8_t bResampling;
+    uint8_t bResampling;
 
-	/* Field taken direct from stream->codec */
-	int32_t channels;
-	int32_t bits_per_coded_sample;
-	int32_t sample_rate;
-	int32_t bit_rate;
+    /* Field taken direct from stream->codec */
+    int32_t channels;
+    int32_t bits_per_coded_sample;
+    int32_t sample_rate;
+    int32_t bit_rate;
 
-	int32_t block_align;
-	int32_t frame_size;
+    int32_t block_align;
+    int32_t frame_size;
 
-	int32_t codec_id;
+    int32_t codec_id;
 
-	uint8_t *private_data;
-	uint32_t private_size;
+    uint8_t *private_data;
+    uint32_t private_size;
 } pcmPrivateData_t;
-
 #endif

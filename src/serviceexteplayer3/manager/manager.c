@@ -34,21 +34,18 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Variables                     */
+/* Varaibles                     */
 /* ***************************** */
 
 extern Manager_t AudioManager;
 extern Manager_t VideoManager;
 extern Manager_t SubtitleManager;
-extern Manager_t ChapterManager;
 
-ManagerHandler_t ManagerHandler =
-{
-	"ManagerHandler",
-	&AudioManager,
-	&VideoManager,
-	&SubtitleManager,
-	&ChapterManager
+ManagerHandler_t ManagerHandler = {
+    "ManagerHandler",
+    &AudioManager,
+    &VideoManager,
+    &SubtitleManager
 };
 
 /* ***************************** */
@@ -58,67 +55,66 @@ ManagerHandler_t ManagerHandler =
 /* ***************************** */
 /* Functions                     */
 /* ***************************** */
-
 void copyTrack(Track_t *to, Track_t *from)
 {
-	if (NULL != to && NULL != from)
-	{
-		*to = *from;
-		if (from->Name != NULL)
-		{
-			to->Name = strdup(from->Name);
-		}
-		else
-		{
-			to->Name = strdup("Unknown");
-		}
+    if(NULL != to && NULL != from)
+    {
+        *to = *from;
+        if (from->Name != NULL)
+        {
+            to->Name = strdup(from->Name);
+        }
+        else
+        {
+            to->Name = strdup("Unknown");
+        }
 
-		if (from->Encoding != NULL)
-		{
-			to->Encoding = strdup(from->Encoding);
-		}
-		else
-		{
-			to->Encoding = strdup("Unknown");
-		}
+        if (from->Encoding != NULL)
+        {
+            to->Encoding = strdup(from->Encoding);
+        }
+        else
+        {
+            to->Encoding = strdup("Unknown");
+        }
 
-		if (from->language != NULL)
-		{
-			to->language = strdup(from->language);
-		}
-		else
-		{
-			to->language = strdup("Unknown");
-		}
-	}
+        if (from->language != NULL)
+        {
+            to->language = strdup(from->language);
+        }
+        else
+        {
+            to->language = strdup("Unknown");
+        }
+    }
 }
 
 void freeTrack(Track_t *track)
 {
-	if (NULL != track)
-	{
-		if (track->Name != NULL)
-		{
-			free(track->Name);
-			track->Name = NULL;
-		}
+    if(NULL != track)
+    {
+        if (track->Name != NULL)
+        {
+            free(track->Name);
+            track->Name = NULL;
+        }
 
-		if (track->Encoding != NULL)
-		{
-			free(track->Encoding);
-			track->Encoding = NULL;
-		}
+        if (track->Encoding != NULL)
+        {
+            free(track->Encoding);
+            track->Encoding = NULL;
+        }
 
-		if (track->language != NULL)
-		{
-			free(track->language);
-			track->language = NULL;
-		}
+        if (track->language != NULL)
+        {
+            free(track->language);
+            track->language = NULL;
+        }
 
-		if (track->aacbuf != NULL)
-		{
-			free(track->aacbuf);
-			track->aacbuf = NULL;
-		}
-	}
+        if (track->aacbuf != NULL)
+        {
+            free(track->aacbuf);
+            track->aacbuf = NULL;
+        }
+    }
 }

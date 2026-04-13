@@ -49,13 +49,34 @@
 /* ***************************** */
 /* Makros/Constants              */
 /* ***************************** */
+#ifdef SAM_WITH_DEBUG
+#define VORBIS_DEBUG
+#else
+#define VORBIS_SILENT
+#endif
+
+#ifdef VORBIS_DEBUG
+
+static short debug_level = 1;
+
+#define vorbis_printf(level, fmt, x...) do { \
+if (debug_level >= level) printf("[%s:%s] " fmt, __FILE__, __FUNCTION__, ## x); } while (0)
+#else
+#define vorbis_printf(level, fmt, x...)
+#endif
+
+#ifndef VORBIS_SILENT
+#define vorbis_err(fmt, x...) do { printf("[%s:%s] " fmt, __FILE__, __FUNCTION__, ## x); } while (0)
+#else
+#define vorbis_err(fmt, x...)
+#endif
 
 /* ***************************** */
 /* Types                         */
 /* ***************************** */
 
 /* ***************************** */
-/* Variables                     */
+/* Varaibles                     */
 /* ***************************** */
 
 /* ***************************** */
@@ -68,69 +89,68 @@
 
 static int reset()
 {
-	return 0;
+    return 0;
 }
 
-static int writeData(void *_call)
+static int writeData(void* _call)
 {
-	WriterAVCallData_t *call = (WriterAVCallData_t *) _call;
+    WriterAVCallData_t* call = (WriterAVCallData_t*) _call;
 
-	unsigned char PesHeader[PES_MAX_HEADER_SIZE];
+    unsigned char  PesHeader[PES_MAX_HEADER_SIZE];
 
-	vorbis_printf(10, "\n");
+    vorbis_printf(10, "\n");
 
-	if (call == NULL)
-	{
-		vorbis_err("call data is NULL...\n");
-		return 0;
-	}
+    if (call == NULL)
+    {
+        vorbis_err("call data is NULL...\n");
+        return 0;
+    }
 
-	vorbis_printf(10, "AudioPts %lld\n", call->Pts);
+    vorbis_printf(10, "AudioPts %lld\n", call->Pts);
 
-	if ((call->data == NULL) || (call->len <= 0))
-	{
-		vorbis_err("parsing NULL Data. ignoring...\n");
-		return 0;
-	}
+    if ((call->data == NULL) || (call->len <= 0))
+    {
+        vorbis_err("parsing NULL Data. ignoring...\n");
+        return 0;
+    }
 
-	if (call->fd < 0)
-	{
-		vorbis_err("file pointer < 0. ignoring ...\n");
-		return 0;
-	}
+    if (call->fd < 0)
+    {
+        vorbis_err("file pointer < 0. ignoring ...\n");
+        return 0;
+    }
 
-	int HeaderLength = InsertPesHeader(PesHeader, call->len, MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
+    int HeaderLength = InsertPesHeader (PesHeader, call->len , MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
 
-	unsigned char *PacketStart = malloc(call->len + HeaderLength);
+    unsigned char* PacketStart = malloc(call->len + HeaderLength);
 
-	memcpy(PacketStart, PesHeader, HeaderLength);
-	memcpy(PacketStart + HeaderLength, call->data, call->len);
+    memcpy (PacketStart, PesHeader, HeaderLength);
+    memcpy (PacketStart + HeaderLength, call->data, call->len);
 
-	int len = write(call->fd, PacketStart, call->len + HeaderLength);
+    int len = write(call->fd, PacketStart, call->len + HeaderLength);
 
-	free(PacketStart);
+    free(PacketStart);
 
-	vorbis_printf(10, "vorbis_Write-< len=%d\n", len);
-	return len;
+    vorbis_printf(10, "vorbis_Write-< len=%d\n", len);
+    return len;
 }
 
 /* ***************************** */
 /* Writer  Definition            */
 /* ***************************** */
 
-static WriterCaps_t caps_vorbis =
-{
-	"vorbis",
-	eAudio,
-	"A_VORBIS",
-	AUDIO_ENCODING_VORBIS,
-	-1,
-	-1
+static WriterCaps_t caps_vorbis = {
+    "vorbis",
+    eAudio,
+    "A_VORBIS",
+    AUDIO_ENCODING_VORBIS,
+    -1,
+    -1
 };
 
-struct Writer_s WriterAudioVORBIS =
-{
-	&reset,
-	&writeData,
-	&caps_vorbis
+struct Writer_s WriterAudioVORBIS = {
+    &reset,
+    &writeData,
+    NULL,
+    &caps_vorbis
 };

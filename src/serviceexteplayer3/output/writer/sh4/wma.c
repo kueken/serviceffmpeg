@@ -56,7 +56,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Variables                     */
+/* Varaibles                     */
 /* ***************************** */
 
 static int initialHeader = 1;
@@ -71,109 +71,109 @@ static int initialHeader = 1;
 
 static int reset()
 {
-	initialHeader = 1;
-	return 0;
+    initialHeader = 1;
+    return 0;
 }
 
-static int writeData(void *_call)
+static int writeData(void* _call)
 {
-	WriterAVCallData_t *call = (WriterAVCallData_t *) _call;
+    WriterAVCallData_t* call = (WriterAVCallData_t*) _call;
 
-	int len = 0;
+    int len = 0;
 
-	wma_printf(10, "\n");
+    wma_printf(10, "\n");
 
-	if (call == NULL)
-	{
-		wma_err("call data is NULL...\n");
-		return 0;
-	}
+    if (call == NULL)
+    {
+        wma_err("call data is NULL...\n");
+        return 0;
+    }
 
-	wma_printf(10, "AudioPts %lld\n", call->Pts);
+    wma_printf(10, "AudioPts %lld\n", call->Pts);
 
-	if ((call->data == NULL) || (call->len <= 0))
-	{
-		wma_err("parsing NULL Data. ignoring...\n");
-		return 0;
-	}
+    if ((call->data == NULL) || (call->len <= 0))
+    {
+        wma_err("parsing NULL Data. ignoring...\n");
+        return 0;
+    }
 
-	if (call->fd < 0)
-	{
-		wma_err("file pointer < 0. ignoring ...\n");
-		return 0;
-	}
+    if (call->fd < 0)
+    {
+        wma_err("file pointer < 0. ignoring ...\n");
+        return 0;
+    }
 
-	if (initialHeader)
-	{
-		unsigned char  PesHeader[PES_MAX_HEADER_SIZE];
+    if (initialHeader)
+    {
 
-		if ((call->private_size <= 0) || (call->private_data == NULL))
-		{
-			wma_err("private NULL.\n");
-			return -1;
-		}
+        unsigned char  PesHeader[PES_MAX_HEADER_SIZE];
 
-		struct iovec iov[2];
-		iov[0].iov_base = PesHeader;
-		iov[0].iov_len = InsertPesHeader(PesHeader, call->private_size, MPEG_AUDIO_PES_START_CODE, 0, 0);
-		iov[1].iov_base = call->private_data;
-		iov[1].iov_len = call->private_size;
-		len = call->WriteV(call->fd, iov, 2);
-		initialHeader = 0;
-	}
+        if ((call->private_size <= 0) || (call->private_data == NULL))
+        {
+            wma_err("private NULL.\n");
+            return -1;
+        }
 
-	if (len > -1 && call->len > 0 && call->data)
-	{
-		unsigned char  PesHeader[PES_MAX_HEADER_SIZE];
-		struct iovec iov[2];
-		iov[0].iov_base = PesHeader;
-		iov[0].iov_len = InsertPesHeader(PesHeader, call->len, MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
-		iov[1].iov_base = call->data;
-		iov[1].iov_len = call->len;
+        struct iovec iov[2];
+        iov[0].iov_base = PesHeader;
+        iov[0].iov_len = InsertPesHeader (PesHeader, call->private_size, MPEG_AUDIO_PES_START_CODE, 0, 0);
+        iov[1].iov_base = call->private_data;
+        iov[1].iov_len = call->private_size;
+        len = call->WriteV(call->fd, iov, 2);
+        initialHeader = 0;
+    }
 
-		ssize_t l = call->WriteV(call->fd, iov, 2);
-		len = (l > -1) ? len + l : l;
-	}
+    if (len > -1 && call->len > 0 && call->data)
+    {
+        unsigned char  PesHeader[PES_MAX_HEADER_SIZE];
+        struct iovec iov[2];
+        iov[0].iov_base = PesHeader;
+        iov[0].iov_len = InsertPesHeader (PesHeader, call->len, MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
+        iov[1].iov_base = call->data;
+        iov[1].iov_len = call->len;
 
-	wma_printf(10, "wma < %d\n", len);
+        ssize_t l = call->WriteV(call->fd, iov, 2);
+        len = (l > -1) ? len + l : l;
+    }
 
-	return len;
+    wma_printf(10, "wma < %d\n", len);
+
+    return len;
 }
 
 /* ***************************** */
-/* Writer Definition             */
+/* Writer Definition            */
 /* ***************************** */
 
-static WriterCaps_t capsWMAPRO =
-{
-	"wma/pro",
-	eAudio,
-	"A_WMA/PRO",
-	AUDIO_ENCODING_WMA,
-	-1,
-	-1
+static WriterCaps_t capsWMAPRO = {
+    "wma/pro",
+    eAudio,
+    "A_WMA/PRO",
+    AUDIO_ENCODING_WMA,
+    -1,
+    -1
 };
 
-struct Writer_s WriterAudioWMAPRO =
-{
-	&reset,
-	&writeData,
-	&capsWMAPRO
+struct Writer_s WriterAudioWMAPRO = {
+    &reset,
+    &writeData,
+    NULL,
+    &capsWMAPRO
 };
 
-static WriterCaps_t capsWMA =
-{
-	"wma",
-	eAudio,
-	"A_WMA",
-	AUDIO_ENCODING_WMA,
-	-1,
-	-1
+
+static WriterCaps_t capsWMA = {
+    "wma",
+    eAudio,
+    "A_WMA",
+    AUDIO_ENCODING_WMA,
+    -1,
+    -1
 };
 
-struct Writer_s WriterAudioWMA =
-{
-	&reset,
-	&writeData,
-	&capsWMA
+struct Writer_s WriterAudioWMA = {
+    &reset,
+    &writeData,
+    NULL,
+    &capsWMA
 };
