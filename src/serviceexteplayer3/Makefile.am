@@ -1,6 +1,15 @@
 plugindir = $(libdir)/enigma2/python/Plugins/SystemPlugins/ServiceExteplayer3
 
 AUTOMAKE_OPTIONS = subdir-objects
+AM_CFLAGS = -Wall -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE
+
+CXXFLAGS = -Wall
+
+AM_CPPFLAGS   = -I$(srcdir)/include
+AM_CPPFLAGS  += -I$(top_srcdir)/include
+AM_CPPFLAGS  += -I$(srcdir)/external
+
+AM_CXXFLAGS   = -fno-rtti -fno-exceptions -fno-strict-aliasing
 
 plugin_LTLIBRARIES = serviceexteplayer3.la
 
@@ -95,7 +104,4 @@ serviceexteplayer3_la_LDFLAGS = \
 	-avoid-version \
 	-shared
 	
-AM_CPPFLAGS = \
-    -I$(top_srcdir)/src/serviceexteplayer3 \
-    -I$(top_srcdir)/src/serviceexteplayer3/external \
-    -I$(top_srcdir)/src/serviceexteplayer3/include
+SERVICEEXTEPLAYER3_LIBS = serviceexteplayer3.la -lswscale -ldl -lpthread -lavformat -lavcodec -lavutil -lswresample
