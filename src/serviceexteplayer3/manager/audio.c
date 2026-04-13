@@ -330,6 +330,5 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument)
 struct Manager_s AudioManager = {
     "Audio",
     &Command,
-	NULL,
     NULL
 };

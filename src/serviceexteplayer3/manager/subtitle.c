@@ -340,6 +340,5 @@ static int32_t Command(void  *_context, ManagerCmd_t command, void *argument)
 Manager_t SubtitleManager = {
     "Subtitle",
     &Command,
-	NULL,
     NULL
 };

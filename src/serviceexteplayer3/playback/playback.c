@@ -755,6 +755,5 @@ PlaybackHandler_t PlaybackHandler = {
     0,          //noprobe
     0,          //isLoopMode
     0,          //isTSLiveMode
-	10000,      //httpTimeout
     NULL,       //stamp
 };

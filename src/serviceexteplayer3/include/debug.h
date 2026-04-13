@@ -1,294 +1,580 @@
 #include <stdio.h>
-#define log_error(silent, fmt, x...) do { if(!(*silent)) printf("[%s:%s] " fmt, __FILE__, __FUNCTION__, ## x); } while (0)
-#define log_printf(maxlevel, level, fmt, x...) do { if (*maxlevel >= level) printf("[%s:%s] " fmt, __FILE__, __FUNCTION__, ## x); } while (0)
-int set_log_level(const char *level_str);
+#define log_error(fmt, x...) do { printf("[%s:%s] " fmt, __FILE__, __FUNCTION__, ## x); } while (0)
+#define log_printf(maxlevel, level, fmt, x...) do { if (maxlevel >= level) printf("[%s:%s] " fmt, __FILE__, __FUNCTION__, ## x); } while (0)
 
-extern int AV_DEBUG_LEVEL;
 
 /*******************************************
  * ffmpeg
  *******************************************/
-extern int FFMPEG_DEBUG_LEVEL;
-extern int FFMPEG_SILENT;
+#define FFMPEG_DEBUG_LEVEL 0
+#define FFMPEG_SILENT
 
-#define ffmpeg_printf(...) log_printf(&FFMPEG_DEBUG_LEVEL, __VA_ARGS__)
-#define ffmpeg_err(...) log_error(&FFMPEG_SILENT, __VA_ARGS__)
+#if FFMPEG_DEBUG_LEVEL
+#define ffmpeg_printf(...) log_printf(FFMPEG_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define ffmpeg_printf(...)
+#endif
+
+#ifndef FFMPEG_SILENT
+#define ffmpeg_err(...) log_error(__VA_ARGS__)
+#else
+#define ffmpeg_err(...)
+#endif
 
 /*******************************************
  * container
  *******************************************/
-extern int CONTAINER_DEBUG_LEVEL;
-extern int CONTAINER_SILENT;
+#define CONTAINER_DEBUG_LEVEL 0
+#define CONTAINER_SILENT
 
-#define container_printf(...) log_printf(&CONTAINER_DEBUG_LEVEL, __VA_ARGS__)
-#define container_err(...) log_error(&CONTAINER_SILENT, __VA_ARGS__)
+#if CONTAINER_DEBUG_LEVEL
+#define container_printf(...) log_printf(CONTAINER_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define container_printf(...)
+#endif
+
+#ifndef CONTAINER_SILENT
+#define container_err(...) log_error(__VA_ARGS__)
+#else
+#define container_err(...)
+#endif
 
 /*******************************************
  * latmenc
  *******************************************/
-extern int LATMENC_DEBUG_LEVEL;
-extern int LATMENC_SILENT;
+#define LATMENC_DEBUG_LEVEL 0
+#define LATMENC_SILENT
 
-#define latmenc_printf(...) log_printf(&LATMENC_DEBUG_LEVEL, __VA_ARGS__)
-#define latmenc_err(...) log_error(&LATMENC_SILENT, __VA_ARGS__)
+#if LATMENC_DEBUG_LEVEL
+#define latmenc_printf(...) log_printf(LATMENC_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define latmenc_printf(...)
+#endif
+
+#ifndef LATMENC_SILENT
+#define latmenc_err(...) log_error(__VA_ARGS__)
+#else
+#define latmenc_err(...)
+#endif
 
 /*******************************************
  * audio_mgr
  *******************************************/
-extern int AUDIO_MGR_DEBUG_LEVEL;
-extern int AUDIO_MGR_SILENT;
+#define AUDIO_MGR_DEBUG_LEVEL 0
+#define AUDIO_MGR_SILENT
 
-#define audio_mgr_printf(...) log_printf(&AUDIO_MGR_DEBUG_LEVEL, __VA_ARGS__)
-#define audio_mgr_err(...) log_error(&AUDIO_MGR_SILENT, __VA_ARGS__)
+#if AUDIO_MGR_DEBUG_LEVEL
+#define audio_mgr_printf(...) log_printf(AUDIO_MGR_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define audio_mgr_printf(...)
+#endif
+
+#ifndef AUDIO_MGR_SILENT
+#define audio_mgr_err(...) log_error(__VA_ARGS__)
+#else
+#define audio_mgr_err(...)
+#endif
 
 /*******************************************
  * subtitle_mgr
  *******************************************/
-extern int SUBTITLE_MGR_DEBUG_LEVEL;
-extern int SUBTITLE_MGR_SILENT;
+#define SUBTITLE_MGR_DEBUG_LEVEL 0
+#define SUBTITLE_MGR_SILENT
 
-#define subtitle_mgr_printf(...) log_printf(&SUBTITLE_MGR_DEBUG_LEVEL, __VA_ARGS__)
-#define subtitle_mgr_err(...) log_error(&SUBTITLE_MGR_SILENT, __VA_ARGS__)
+#if SUBTITLE_MGR_DEBUG_LEVEL
+#define subtitle_mgr_printf(...) log_printf(SUBTITLE_MGR_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define subtitle_mgr_printf(...)
+#endif
+
+#ifndef SUBTITLE_MGR_SILENT
+#define subtitle_mgr_err(...) log_error(__VA_ARGS__)
+#else
+#define subtitle_mgr_err(...)
+#endif
 
 /*******************************************
  * video_mgr
  *******************************************/
-extern int VIDEO_MGR_DEBUG_LEVEL;
-extern int VIDEO_MGR_SILENT;
+#define VIDEO_MGR_DEBUG_LEVEL 0
+#define VIDEO_MGR_SILENT
 
-#define video_mgr_printf(...) log_printf(&VIDEO_MGR_DEBUG_LEVEL, __VA_ARGS__)
-#define video_mgr_err(...) log_error(&VIDEO_MGR_SILENT, __VA_ARGS__)
+#if VIDEO_MGR_DEBUG_LEVEL
+#define video_mgr_printf(...) log_printf(VIDEO_MGR_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define video_mgr_printf(...)
+#endif
+
+#ifndef VIDEO_MGR_SILENT
+#define video_mgr_err(...) log_error(__VA_ARGS__)
+#else
+#define video_mgr_err(...)
+#endif
 
 /*******************************************
  * linuxdvb
  *******************************************/
-extern int LINUXDVB_DEBUG_LEVEL;
-extern int LINUXDVB_SILENT;
+#define LINUXDVB_DEBUG_LEVEL 0
+#define LINUXDVB_SILENT
 
-#define linuxdvb_printf(...) log_printf(&LINUXDVB_DEBUG_LEVEL, __VA_ARGS__)
-#define linuxdvb_err(...) log_error(&LINUXDVB_SILENT, __VA_ARGS__)
+#if LINUXDVB_DEBUG_LEVEL
+#define linuxdvb_printf(...) log_printf(LINUXDVB_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define linuxdvb_printf(...)
+#endif
+
+#ifndef LINUXDVB_SILENT
+#define linuxdvb_err(...) log_error(__VA_ARGS__)
+#else
+#define linuxdvb_err(...)
+#endif
 
 /*******************************************
  * buff
  *******************************************/
-extern int BUFF_DEBUG_LEVEL;
-extern int BUFF_SILENT;
+#define BUFF_DEBUG_LEVEL 0
+#define BUFF_SILENT
 
-#define buff_printf(...) log_printf(&BUFF_DEBUG_LEVEL, __VA_ARGS__)
-#define buff_err(...) log_error(&BUFF_SILENT, __VA_ARGS__)
+#if BUFF_DEBUG_LEVEL
+#define buff_printf(...) log_printf(BUFF_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define buff_printf(...)
+#endif
+
+#ifndef BUFF_SILENT
+#define buff_err(...) log_error(__VA_ARGS__)
+#else
+#define buff_err(...)
+#endif
 
 /*******************************************
  * output
  *******************************************/
-extern int OUTPUT_DEBUG_LEVEL;
-extern int OUTPUT_SILENT;
+#define OUTPUT_DEBUG_LEVEL 0
+#define OUTPUT_SILENT
 
-#define output_printf(...) log_printf(&OUTPUT_DEBUG_LEVEL, __VA_ARGS__)
-#define output_err(...) log_error(&OUTPUT_SILENT, __VA_ARGS__)
+#if OUTPUT_DEBUG_LEVEL
+#define output_printf(...) log_printf(OUTPUT_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define output_printf(...)
+#endif
+
+#ifndef OUTPUT_SILENT
+#define output_err(...) log_error(__VA_ARGS__)
+#else
+#define output_err(...)
+#endif
 
 /*******************************************
  * subtitle
  *******************************************/
-extern int SUBTITLE_DEBUG_LEVEL;
-extern int SUBTITLE_SILENT;
+#define SUBTITLE_DEBUG_LEVEL 0
+#define SUBTITLE_SILENT
 
-#define subtitle_printf(...) log_printf(&SUBTITLE_DEBUG_LEVEL, __VA_ARGS__)
-#define subtitle_err(...) log_error(&SUBTITLE_SILENT, __VA_ARGS__)
+#if SUBTITLE_DEBUG_LEVEL
+#define subtitle_printf(...) log_printf(SUBTITLE_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define subtitle_printf(...)
+#endif
+
+#ifndef SUBTITLE_SILENT
+#define subtitle_err(...) log_error(__VA_ARGS__)
+#else
+#define subtitle_err(...)
+#endif
 
 /*******************************************
  * writer
  *******************************************/
-extern int WRITER_DEBUG_LEVEL;
-extern int WRITER_SILENT;
+#define WRITER_DEBUG_LEVEL 0
+#define WRITER_SILENT
 
-#define writer_printf(...) log_printf(&WRITER_DEBUG_LEVEL, __VA_ARGS__)
-#define writer_err(...) log_error(&WRITER_SILENT, __VA_ARGS__)
+#if WRITER_DEBUG_LEVEL
+#define writer_printf(...) log_printf(WRITER_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define writer_printf(...)
+#endif
+
+#ifndef WRITER_SILENT
+#define writer_err(...) log_error(__VA_ARGS__)
+#else
+#define writer_err(...)
+#endif
 
 /*******************************************
  * playback
  *******************************************/
-extern int PLAYBACK_DEBUG_LEVEL;
-extern int PLAYBACK_SILENT;
+#define PLAYBACK_DEBUG_LEVEL 0
+#define PLAYBACK_SILENT
 
-#define playback_printf(...) log_printf(&PLAYBACK_DEBUG_LEVEL, __VA_ARGS__)
-#define playback_err(...) log_error(&PLAYBACK_SILENT, __VA_ARGS__)
+#if PLAYBACK_DEBUG_LEVEL
+#define playback_printf(...) log_printf(PLAYBACK_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define playback_printf(...)
+#endif
+
+#ifndef PLAYBACK_SILENT
+#define playback_err(...) log_error(__VA_ARGS__)
+#else
+#define playback_err(...)
+#endif
 
 /*******************************************
  * aac
  *******************************************/
-extern int AAC_DEBUG_LEVEL;
-extern int AAC_SILENT;
+#define AAC_DEBUG_LEVEL 0
+#define AAC_SILENT
 
-#define aac_printf(...) log_printf(&AAC_DEBUG_LEVEL, __VA_ARGS__)
-#define aac_err(...) log_error(&AAC_SILENT, __VA_ARGS__)
+#if AAC_DEBUG_LEVEL
+#define aac_printf(...) log_printf(AAC_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define aac_printf(...)
+#endif
+
+#ifndef AAC_SILENT
+#define aac_err(...) log_error(__VA_ARGS__)
+#else
+#define aac_err(...)
+#endif
 
 /*******************************************
  * ac3
  *******************************************/
-extern int AC3_DEBUG_LEVEL;
-extern int AC3_SILENT;
+#define AC3_DEBUG_LEVEL 0
+#define AC3_SILENT
 
-#define ac3_printf(...) log_printf(&AC3_DEBUG_LEVEL, __VA_ARGS__)
-#define ac3_err(...) log_error(&AC3_SILENT, __VA_ARGS__)
+#if AC3_DEBUG_LEVEL
+#define ac3_printf(...) log_printf(AC3_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define ac3_printf(...)
+#endif
+
+#ifndef AC3_SILENT
+#define ac3_err(...) log_error(__VA_ARGS__)
+#else
+#define ac3_err(...)
+#endif
 
 /*******************************************
  * amr
  *******************************************/
-extern int AMR_DEBUG_LEVEL;
-extern int AMR_SILENT;
+#define AMR_DEBUG_LEVEL 0
+#define AMR_SILENT
 
-#define amr_printf(...) log_printf(&AMR_DEBUG_LEVEL, __VA_ARGS__)
-#define amr_err(...) log_error(&AMR_SILENT, __VA_ARGS__)
+#if AMR_DEBUG_LEVEL
+#define amr_printf(...) log_printf(AMR_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define amr_printf(...)
+#endif
+
+#ifndef AMR_SILENT
+#define amr_err(...) log_error(__VA_ARGS__)
+#else
+#define amr_err(...)
+#endif
 
 /*******************************************
  * divx
  *******************************************/
-extern int DIVX_DEBUG_LEVEL;
-extern int DIVX_SILENT;
+#define DIVX_DEBUG_LEVEL 0
+#define DIVX_SILENT
 
-#define divx_printf(...) log_printf(&DIVX_DEBUG_LEVEL, __VA_ARGS__)
-#define divx_err(...) log_error(&DIVX_SILENT, __VA_ARGS__)
+#if DIVX_DEBUG_LEVEL
+#define divx_printf(...) log_printf(DIVX_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define divx_printf(...)
+#endif
+
+#ifndef DIVX_SILENT
+#define divx_err(...) log_error(__VA_ARGS__)
+#else
+#define divx_err(...)
+#endif
 
 /*******************************************
  * dts
  *******************************************/
-extern int DTS_DEBUG_LEVEL;
-extern int DTS_SILENT;
+#define DTS_DEBUG_LEVEL 0
+#define DTS_SILENT
 
-#define dts_printf(...) log_printf(&DTS_DEBUG_LEVEL, __VA_ARGS__)
-#define dts_err(...) log_error(&DTS_SILENT, __VA_ARGS__)
+#if DTS_DEBUG_LEVEL
+#define dts_printf(...) log_printf(DTS_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define dts_printf(...)
+#endif
+
+#ifndef DTS_SILENT
+#define dts_err(...) log_error(__VA_ARGS__)
+#else
+#define dts_err(...)
+#endif
 
 /*******************************************
  * h263
  *******************************************/
-extern int H263_DEBUG_LEVEL;
-extern int H263_SILENT;
+#define H263_DEBUG_LEVEL 0
+#define H263_SILENT
 
-#define h263_printf(...) log_printf(&H263_DEBUG_LEVEL, __VA_ARGS__)
-#define h263_err(...) log_error(&H263_SILENT, __VA_ARGS__)
+#if H263_DEBUG_LEVEL
+#define h263_printf(...) log_printf(H263_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define h263_printf(...)
+#endif
+
+#ifndef H263_SILENT
+#define h263_err(...) log_error(__VA_ARGS__)
+#else
+#define h263_err(...)
+#endif
 
 /*******************************************
  * h264
  *******************************************/
-extern int H264_DEBUG_LEVEL;
-extern int H264_SILENT;
+#define H264_DEBUG_LEVEL 0
+#define H264_SILENT
 
-#define h264_printf(...) log_printf(&H264_DEBUG_LEVEL, __VA_ARGS__)
-#define h264_err(...) log_error(&H264_SILENT, __VA_ARGS__)
+#if H264_DEBUG_LEVEL
+#define h264_printf(...) log_printf(H264_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define h264_printf(...)
+#endif
+
+#ifndef H264_SILENT
+#define h264_err(...) log_error(__VA_ARGS__)
+#else
+#define h264_err(...)
+#endif
 
 /*******************************************
  * h265
  *******************************************/
-extern int H265_DEBUG_LEVEL;
-extern int H265_SILENT;
+#define H265_DEBUG_LEVEL 0
+#define H265_SILENT
 
-#define h265_printf(...) log_printf(&H265_DEBUG_LEVEL, __VA_ARGS__)
-#define h265_err(...) log_error(&H265_SILENT, __VA_ARGS__)
+#if H265_DEBUG_LEVEL
+#define h265_printf(...) log_printf(H265_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define h265_printf(...)
+#endif
+
+#ifndef H265_SILENT
+#define h265_err(...) log_error(__VA_ARGS__)
+#else
+#define h265_err(...)
+#endif
 
 /*******************************************
  * lpcm
  *******************************************/
-extern int LPCM_DEBUG_LEVEL;
-extern int LPCM_SILENT;
+#define LPCM_DEBUG_LEVEL 0
+#define LPCM_SILENT
 
-#define lpcm_printf(...) log_printf(&LPCM_DEBUG_LEVEL, __VA_ARGS__)
-#define lpcm_err(...) log_error(&LPCM_SILENT, __VA_ARGS__)
+#if LPCM_DEBUG_LEVEL
+#define lpcm_printf(...) log_printf(LPCM_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define lpcm_printf(...)
+#endif
+
+#ifndef LPCM_SILENT
+#define lpcm_err(...) log_error(__VA_ARGS__)
+#else
+#define lpcm_err(...)
+#endif
 
 /*******************************************
  * mp3
  *******************************************/
-extern int MP3_DEBUG_LEVEL;
-extern int MP3_SILENT;
+#define MP3_DEBUG_LEVEL 0
+#define MP3_SILENT
 
-#define mp3_printf(...) log_printf(&MP3_DEBUG_LEVEL, __VA_ARGS__)
-#define mp3_err(...) log_error(&MP3_SILENT, __VA_ARGS__)
+#if MP3_DEBUG_LEVEL
+#define mp3_printf(...) log_printf(MP3_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define mp3_printf(...)
+#endif
+
+#ifndef MP3_SILENT
+#define mp3_err(...) log_error(__VA_ARGS__)
+#else
+#define mp3_err(...)
+#endif
 
 /*******************************************
  * mpeg2
  *******************************************/
-extern int MPEG2_DEBUG_LEVEL;
-extern int MPEG2_SILENT;
+#define MPEG2_DEBUG_LEVEL 0
+#define MPEG2_SILENT
 
-#define mpeg2_printf(...) log_printf(&MPEG2_DEBUG_LEVEL, __VA_ARGS__)
-#define mpeg2_err(...) log_error(&MPEG2_SILENT, __VA_ARGS__)
+#if MPEG2_DEBUG_LEVEL
+#define mpeg2_printf(...) log_printf(MPEG2_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define mpeg2_printf(...)
+#endif
+
+#ifndef MPEG2_SILENT
+#define mpeg2_err(...) log_error(__VA_ARGS__)
+#else
+#define mpeg2_err(...)
+#endif
 
 /*******************************************
  * mpeg4
  *******************************************/
-extern int MPEG4_DEBUG_LEVEL;
-extern int MPEG4_SILENT;
+#define MPEG4_DEBUG_LEVEL 0
+#define MPEG4_SILENT
 
-#define mpeg4_printf(...) log_printf(&MPEG4_DEBUG_LEVEL, __VA_ARGS__)
-#define mpeg4_err(...) log_error(&MPEG4_SILENT, __VA_ARGS__)
+#if MPEG4_DEBUG_LEVEL
+#define mpeg4_printf(...) log_printf(MPEG4_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define mpeg4_printf(...)
+#endif
+
+#ifndef MPEG4_SILENT
+#define mpeg4_err(...) log_error(__VA_ARGS__)
+#else
+#define mpeg4_err(...)
+#endif
 
 /*******************************************
  * pcm
  *******************************************/
-extern int PCM_DEBUG_LEVEL;
-extern int PCM_SILENT;
+#define PCM_DEBUG_LEVEL 0
+#define PCM_SILENT
 
-#define pcm_printf(...) log_printf(&PCM_DEBUG_LEVEL, __VA_ARGS__)
-#define pcm_err(...) log_error(&PCM_SILENT, __VA_ARGS__)
+#if PCM_DEBUG_LEVEL
+#define pcm_printf(...) log_printf(PCM_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define pcm_printf(...)
+#endif
+
+#ifndef PCM_SILENT
+#define pcm_err(...) log_error(__VA_ARGS__)
+#else
+#define pcm_err(...)
+#endif
 
 /*******************************************
  * vc1
  *******************************************/
-extern int VC1_DEBUG_LEVEL;
-extern int VC1_SILENT;
+#define VC1_DEBUG_LEVEL 0
+#define VC1_SILENT
 
-#define vc1_printf(...) log_printf(&VC1_DEBUG_LEVEL, __VA_ARGS__)
-#define vc1_err(...) log_error(&VC1_SILENT, __VA_ARGS__)
+#if VC1_DEBUG_LEVEL
+#define vc1_printf(...) log_printf(VC1_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define vc1_printf(...)
+#endif
+
+#ifndef VC1_SILENT
+#define vc1_err(...) log_error(__VA_ARGS__)
+#else
+#define vc1_err(...)
+#endif
 
 /*******************************************
  * vp
  *******************************************/
-extern int VP_DEBUG_LEVEL;
-extern int VP_SILENT;
+#define VP_DEBUG_LEVEL 0
+#define VP_SILENT
 
-#define vp_printf(...) log_printf(&VP_DEBUG_LEVEL, __VA_ARGS__)
-#define vp_err(...) log_error(&VP_SILENT, __VA_ARGS__)
+#if VP_DEBUG_LEVEL
+#define vp_printf(...) log_printf(VP_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define vp_printf(...)
+#endif
+
+#ifndef VP_SILENT
+#define vp_err(...) log_error(__VA_ARGS__)
+#else
+#define vp_err(...)
+#endif
 
 /*******************************************
  * wma
  *******************************************/
-extern int WMA_DEBUG_LEVEL;
-extern int WMA_SILENT;
+#define WMA_DEBUG_LEVEL 0
+#define WMA_SILENT
 
-#define wma_printf(...) log_printf(&WMA_DEBUG_LEVEL, __VA_ARGS__)
-#define wma_err(...) log_error(&WMA_SILENT, __VA_ARGS__)
+#if WMA_DEBUG_LEVEL
+#define wma_printf(...) log_printf(WMA_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define wma_printf(...)
+#endif
+
+#ifndef WMA_SILENT
+#define wma_err(...) log_error(__VA_ARGS__)
+#else
+#define wma_err(...)
+#endif
 
 /*******************************************
  * wmv
  *******************************************/
-extern int WMV_DEBUG_LEVEL;
-extern int WMV_SILENT;
+#define WMV_DEBUG_LEVEL 0
+#define WMV_SILENT
 
-#define wmv_printf(...) log_printf(&WMV_DEBUG_LEVEL, __VA_ARGS__)
-#define wmv_err(...) log_error(&WMV_SILENT, __VA_ARGS__)
+#if WMV_DEBUG_LEVEL
+#define wmv_printf(...) log_printf(WMV_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define wmv_printf(...)
+#endif
+
+#ifndef WMV_SILENT
+#define wmv_err(...) log_error(__VA_ARGS__)
+#else
+#define wmv_err(...)
+#endif
 
 /*******************************************
  * mjpeg
  *******************************************/
-extern int MJPEG_DEBUG_LEVEL;
-extern int MJPEG_SILENT;
+#define MJPEG_DEBUG_LEVEL 0
+#define MJPEG_SILENT
 
-#define mjpeg_printf(...) log_printf(&MJPEG_DEBUG_LEVEL, __VA_ARGS__)
-#define mjpeg_err(...) log_error(&MJPEG_SILENT, __VA_ARGS__)
+#if MJPEG_DEBUG_LEVEL
+#define mjpeg_printf(...) log_printf(MJPEG_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define mjpeg_printf(...)
+#endif
+
+#ifndef MJPEG_SILENT
+#define mjpeg_err(...) log_error(__VA_ARGS__)
+#else
+#define mjpeg_err(...)
+#endif
 
 /*******************************************
  * bcma
  *******************************************/
-extern int BCMA_DEBUG_LEVEL;
-extern int BCMA_SILENT;
+#define BCMA_DEBUG_LEVEL 0
+#define BCMA_SILENT
 
-#define bcma_printf(...) log_printf(&BCMA_DEBUG_LEVEL, __VA_ARGS__)
-#define bcma_err(...) log_error(&BCMA_SILENT, __VA_ARGS__)
+#if BCMA_DEBUG_LEVEL
+#define bcma_printf(...) log_printf(BCMA_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define bcma_printf(...)
+#endif
+
+#ifndef BCMA_SILENT
+#define bcma_err(...) log_error(__VA_ARGS__)
+#else
+#define bcma_err(...)
+#endif
 
 /*******************************************
  * plugin
  *******************************************/
-extern int PLUGIN_DEBUG_LEVEL;
-extern int PLUGIN_SILENT;
+#define PLUGIN_DEBUG_LEVEL 0
+#define PLUGIN_SILENT
 
-#define plugin_printf(...) log_printf(&PLUGIN_DEBUG_LEVEL, __VA_ARGS__)
-#define plugin_err(...) log_error(&PLUGIN_SILENT, __VA_ARGS__)
+#if PLUGIN_DEBUG_LEVEL
+#define plugin_printf(...) log_printf(PLUGIN_DEBUG_LEVEL, __VA_ARGS__)
+#else
+#define plugin_printf(...)
+#endif
+
+#ifndef PLUGIN_SILENT
+#define plugin_err(...) log_error(__VA_ARGS__)
+#else
+#define plugin_err(...)
+#endif
