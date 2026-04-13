@@ -1,5 +1,7 @@
 plugindir = $(libdir)/enigma2/python/Plugins/SystemPlugins/ServiceExteplayer3
 
+AUTOMAKE_OPTIONS = subdir-objects
+
 plugin_LTLIBRARIES = serviceexteplayer3.la
 
 # E2 Service bridge
