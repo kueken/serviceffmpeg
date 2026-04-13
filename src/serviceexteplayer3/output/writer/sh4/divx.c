@@ -51,35 +51,14 @@
 /* Makros/Constants              */
 /* ***************************** */
 
-#ifdef SAM_WITH_DEBUG
-#define DIVX_DEBUG
-#else
-#define DIVX_SILENT
-#endif
-
-#ifdef DIVX_DEBUG
-
-static short debug_level = 0;
-
-#define divx_printf(level, fmt, x...) do { \
-if (debug_level >= level) printf("[%s:%s] " fmt, __FILE__, __FUNCTION__, ## x); } while (0)
-#else
-#define divx_printf(level, fmt, x...)
-#endif
-
-#ifndef DIVX_SILENT
-#define divx_err(fmt, x...) do { printf("[%s:%s] " fmt, __FILE__, __FUNCTION__, ## x); } while (0)
-#else
-#define divx_err(fmt, x...)
-#endif
-
 /* ***************************** */
 /* Types                         */
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
+
 static int initialHeader = 1;
 
 /* ***************************** */
@@ -89,157 +68,160 @@ static int initialHeader = 1;
 /* ***************************** */
 /* MISC Functions                */
 /* ***************************** */
+
 static int reset()
 {
-    initialHeader = 1;
-    return 0;
+	initialHeader = 1;
+	return 0;
 }
 
 static uint8_t updateCodecData(uint8_t *data, int32_t size)
 {
-    static uint8_t *oldData = NULL;
-    static int32_t oldSize = 0;
+	static uint8_t *oldData = NULL;
+	static int32_t oldSize = 0;
 
-    uint8_t update = 0;
-    if (data != NULL && size > 0)
-    {
-        if (size != oldSize)
-        {
-            update = 1;
-        }
-        else
-        {
-            uint32_t i = 0;
-            for (i = 0; i < size; i++)
-            {
-                if (data[i] != oldData[i])
-                {
-                    update = 1;
-                    break;
-                }
-            }
-        }
-    }
+	uint8_t update = 0;
+	if (data != NULL && size > 0)
+	{
+		if (size != oldSize)
+		{
+			update = 1;
+		}
+		else
+		{
+			uint32_t i = 0;
+			for (i = 0; i < size; i++)
+			{
+				if (data[i] != oldData[i])
+				{
+					update = 1;
+					break;
+				}
+			}
+		}
+	}
 
-    if (update)
-    {
-        if (oldData != NULL)
-        {
-            free(oldData);
-        }
-        oldData = malloc(size);
-        memcpy(oldData, data, size);
-        oldSize = size;
-    }
+	if (update)
+	{
+		if (oldData != NULL)
+		{
+			free(oldData);
+		}
+		oldData = malloc(size);
+		memcpy(oldData, data, size);
+		oldSize = size;
+	}
 
-    return update;
+	return update;
 }
 
-static int writeData(void* _call)
+static int writeData(void *_call)
 {
-    WriterAVCallData_t* call = (WriterAVCallData_t*) _call;
+	WriterAVCallData_t *call = (WriterAVCallData_t *) _call;
 
-    unsigned char  PesHeader[PES_MAX_HEADER_SIZE];
+	unsigned char  PesHeader[PES_MAX_HEADER_SIZE];
 
-    divx_printf(10, "\n");
+	divx_printf(10, "\n");
 
-    if (call == NULL)
-    {
-        divx_err("call data is NULL...\n");
-        return 0;
-    }
+	if (call == NULL)
+	{
+		divx_err("call data is NULL...\n");
+		return 0;
+	}
 
-    if ((call->data == NULL) || (call->len <= 0))
-    {
-        divx_err("parsing NULL Data. ignoring...\n");
-        return 0;
-    }
+	if ((call->data == NULL) || (call->len <= 0))
+	{
+		divx_err("parsing NULL Data. ignoring...\n");
+		return 0;
+	}
 
-    if (call->fd < 0)
-    {
-        divx_err("file pointer < 0. ignoring ...\n");
-        return 0;
-    }
+	if (call->fd < 0)
+	{
+		divx_err("file pointer < 0. ignoring ...\n");
+		return 0;
+	}
 
-    divx_printf(10, "VideoPts %lld\n", call->Pts);
+	divx_printf(10, "VideoPts %lld\n", call->Pts);
 
-    struct iovec iov[4];
-    int ic = 0;
-    iov[ic].iov_base = PesHeader;
-    iov[ic++].iov_len = InsertPesHeader (PesHeader, call->len, MPEG_VIDEO_PES_START_CODE, call->Pts, 0);
+	struct iovec iov[4];
+	int ic = 0;
+	iov[ic].iov_base = PesHeader;
+	iov[ic++].iov_len = InsertPesHeader(PesHeader, call->len, MPEG_VIDEO_PES_START_CODE, call->Pts, 0);
 
-    if (updateCodecData(call->private_data, call->private_size))
-    {
-        iov[ic].iov_base = call->private_data;
-        iov[ic++].iov_len = call->private_size;
-    }
+	if (updateCodecData(call->private_data, call->private_size))
+	{
+		iov[ic].iov_base = call->private_data;
+		iov[ic++].iov_len = call->private_size;
+	}
 
-    iov[ic].iov_base = call->data;
-    iov[ic++].iov_len = call->len;
+	iov[ic].iov_base = call->data;
+	iov[ic++].iov_len = call->len;
 
-    int len = call->WriteV(call->fd, iov, ic);
+	int len = call->WriteV(call->fd, iov, ic);
 
-    divx_printf(10, "xvid_Write < len=%d\n", len);
+	divx_printf(10, "xvid_Write < len=%d\n", len);
 
-    return len;
+	return len;
 }
 
 /* ***************************** */
 /* Writer  Definition            */
 /* ***************************** */
 
-static WriterCaps_t mpeg4p2_caps = {
-    "mpeg4p2",
-    eVideo,
-    "V_MPEG4",
-    VIDEO_ENCODING_MPEG4P2,
-    -1,
-    -1
+static WriterCaps_t mpeg4p2_caps =
+{
+	"mpeg4p2",
+	eVideo,
+	"V_MPEG4",
+	VIDEO_ENCODING_MPEG4P2,
+	-1,
+	-1
 };
 
-struct Writer_s WriterVideoMPEG4 = {
-    &reset,
-    &writeData,
-    NULL,
-    &mpeg4p2_caps
+struct Writer_s WriterVideoMPEG4 =
+{
+	&reset,
+	&writeData,
+	&mpeg4p2_caps
 };
 
-
-struct Writer_s WriterVideoMSCOMP = {
-    &reset,
-    &writeData,
-    NULL,
-    &mpeg4p2_caps
+struct Writer_s WriterVideoMSCOMP =
+{
+	&reset,
+	&writeData,
+	&mpeg4p2_caps
 };
 
-static WriterCaps_t fourcc_caps = {
-    "fourcc",
-    eVideo,
-    "V_MS/VFW/FOURCC",
-    VIDEO_ENCODING_MPEG4P2,
-    -1,
-    -1
+static WriterCaps_t fourcc_caps =
+{
+	"fourcc",
+	eVideo,
+	"V_MS/VFW/FOURCC",
+	VIDEO_ENCODING_MPEG4P2,
+	-1,
+	-1
 };
 
-struct Writer_s WriterVideoFOURCC = {
-    &reset,
-    &writeData,
-    NULL,
-    &fourcc_caps
+struct Writer_s WriterVideoFOURCC =
+{
+	&reset,
+	&writeData,
+	&fourcc_caps
 };
 
-static WriterCaps_t divx_caps = {
-    "divx",
-    eVideo,
-    "V_MKV/XVID",
-    VIDEO_ENCODING_MPEG4P2,
-    -1,
-    -1
+static WriterCaps_t divx_caps =
+{
+	"divx",
+	eVideo,
+	"V_MKV/XVID",
+	VIDEO_ENCODING_MPEG4P2,
+	-1,
+	-1
 };
 
-struct Writer_s WriterVideoDIVX = {
-    &reset,
-    &writeData,
-    NULL,
-    &divx_caps
+struct Writer_s WriterVideoDIVX =
+{
+	&reset,
+	&writeData,
+	&divx_caps
 };

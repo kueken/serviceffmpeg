@@ -60,8 +60,9 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
+
 unsigned char AC3_SYNC_HEADER[] = {0x80, 0x01, 0x00, 0x01};
 
 /* ***************************** */
@@ -74,88 +75,88 @@ unsigned char AC3_SYNC_HEADER[] = {0x80, 0x01, 0x00, 0x01};
 
 static int reset()
 {
-    return 0;
+	return 0;
 }
 
-static int writeData(void* _call)
+static int writeData(WriterAVCallData_t *call)
 {
-    WriterAVCallData_t* call = (WriterAVCallData_t*) _call;
+	ac3_printf(10, "\n");
 
-    ac3_printf(10, "\n");
+	unsigned char PesHeader[PES_MAX_HEADER_SIZE];
 
-    unsigned char  PesHeader[PES_MAX_HEADER_SIZE];
+	if (call == NULL)
+	{
+		ac3_err("call data is NULL...\n");
+		return 0;
+	}
 
-    if (call == NULL)
-    {
-        ac3_err("call data is NULL...\n");
-        return 0;
-    }
+	ac3_printf(10, "AudioPts %lld\n", call->Pts);
 
-    ac3_printf(10, "AudioPts %lld\n", call->Pts);
+	if ((call->data == NULL) || (call->len <= 0))
+	{
+		ac3_err("parsing NULL Data. ignoring...\n");
+		return 0;
+	}
 
-    if ((call->data == NULL) || (call->len <= 0))
-    {
-        ac3_err("parsing NULL Data. ignoring...\n");
-        return 0;
-    }
+	if (call->fd < 0)
+	{
+		ac3_err("file pointer < 0. ignoring ...\n");
+		return 0;
+	}
 
-    if (call->fd < 0)
-    {
-        ac3_err("file pointer < 0. ignoring ...\n");
-        return 0;
-    }
+	struct iovec iov[3];
 
-    struct iovec iov[3];
+	iov[0].iov_base = PesHeader;
+	iov[0].iov_len = InsertPesHeader(PesHeader, call->len, MPEG_AUDIO_PES_START_CODE, call->Pts, 0);  //+ sizeof(AC3_SYNC_HEADER)
 
-    iov[0].iov_base = PesHeader;
-    iov[0].iov_len = InsertPesHeader (PesHeader, call->len, MPEG_AUDIO_PES_START_CODE, call->Pts, 0); //+ sizeof(AC3_SYNC_HEADER)
+	//PesHeader[6] = 0x81;
+	//PesHeader[7] = 0x80;
+	//PesHeader[8] = 0x09;
 
-    //PesHeader[6] = 0x81;
-    //PesHeader[7] = 0x80;
-    //PesHeader[8] = 0x09;
+	//iov[1].iov_base = AC3_SYNC_HEADER;
+	//iov[1].iov_len = sizeof(AC3_SYNC_HEADER);
+	iov[1].iov_base = call->data;
+	iov[1].iov_len = call->len;
 
-    //iov[1].iov_base = AC3_SYNC_HEADER;
-    //iov[1].iov_len = sizeof(AC3_SYNC_HEADER);
-    iov[1].iov_base = call->data;
-    iov[1].iov_len = call->len;
+	ac3_printf(40, "PES HEADER LEN %d\n", (int)iov[0].iov_len);
 
-    ac3_printf(40, "PES HEADER LEN %d\n", (int)iov[0].iov_len);
-
-    return call->WriteV(call->fd, iov, 2);
+	return call->WriteV(call->fd, iov, 2);
 }
 
 /* ***************************** */
 /* Writer  Definition            */
 /* ***************************** */
 
-static WriterCaps_t caps_ac3 = {
-    "ac3",
-    eAudio,
-    "A_AC3",
-    AUDIO_ENCODING_AC3,
-    AUDIOTYPE_AC3,
-    -1
+static WriterCaps_t caps_ac3 =
+{
+	"ac3",
+	eAudio,
+	"A_AC3",
+	AUDIO_ENCODING_AC3,
+	AUDIOTYPE_AC3,
+	-1
 };
 
-struct Writer_s WriterAudioAC3 = {
-    &reset,
-    &writeData,
-    NULL,
-    &caps_ac3
+struct Writer_s WriterAudioAC3 =
+{
+	&reset,
+	&writeData,
+	&caps_ac3
 };
 
-static WriterCaps_t caps_eac3 = {
-    "ac3",
-    eAudio,
-    "A_EAC3",
-    AUDIO_ENCODING_AC3,
-    AUDIOTYPE_AC3_PLUS,
-    -1
+static WriterCaps_t caps_eac3 =
+{
+	"ac3",
+	eAudio,
+	"A_EAC3",
+	AUDIO_ENCODING_AC3,
+	AUDIOTYPE_AC3_PLUS,
+	-1
 };
 
-struct Writer_s WriterAudioEAC3 = {
-    &reset,
-    &writeData,
-    NULL,
-    &caps_eac3
+struct Writer_s WriterAudioEAC3 =
+{
+	&reset,
+	&writeData,
+	&caps_eac3
 };

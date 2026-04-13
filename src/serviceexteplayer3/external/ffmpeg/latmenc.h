@@ -26,15 +26,16 @@
 
 #define MAX_EXTRADATA_SIZE 1024
 
-typedef struct LATMContext {
-    int off;
-    int channel_conf;
-    int object_type;
-    int counter;
-    int mod; // default 0x0014
-    uint8_t loas_header[3];
-    uint8_t buffer[0x1fff + MAX_EXTRADATA_SIZE + 1024];
-    int len;
+typedef struct LATMContext
+{
+	int off;
+	int channel_conf;
+	int object_type;
+	int counter;
+	int mod; // default 0x0014
+	uint8_t loas_header[3];
+	uint8_t buffer[0x1fff + MAX_EXTRADATA_SIZE + 1024];
+	int len;
 } LATMContext;
 
 int latmenc_decode_extradata(LATMContext *ctx, uint8_t *buf, int size);

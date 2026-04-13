@@ -56,7 +56,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 /* ***************************** */
@@ -69,101 +69,104 @@
 
 static int reset()
 {
-    return 0;
+	return 0;
 }
 
-static int writeData(void* _call)
+static int writeData(void *_call)
 {
-    WriterAVCallData_t* call = (WriterAVCallData_t*) _call;
+	WriterAVCallData_t *call = (WriterAVCallData_t *) _call;
 
-    unsigned char               PesHeader[PES_MAX_HEADER_SIZE];
-    int len = 0;
-    unsigned int Position = 0;
+	unsigned char PesHeader[PES_MAX_HEADER_SIZE];
 
-    mpeg2_printf(10, "\n");
+	int len = 0;
+	unsigned int Position = 0;
 
-    if (call == NULL)
-    {
-        mpeg2_err("call data is NULL...\n");
-        return 0;
-    }
+	mpeg2_printf(10, "\n");
 
-    mpeg2_printf(10, "VideoPts %lld\n", call->Pts);
+	if (call == NULL)
+	{
+		mpeg2_err("call data is NULL...\n");
+		return 0;
+	}
 
-    if ((call->data == NULL) || (call->len <= 0))
-    {
-        mpeg2_err("parsing NULL Data. ignoring...\n");
-        return 0;
-    }
+	mpeg2_printf(10, "VideoPts %lld\n", call->Pts);
 
-    if (call->fd < 0)
-    {
-        mpeg2_err("file pointer < 0. ignoring ...\n");
-        return 0;
-    }
+	if ((call->data == NULL) || (call->len <= 0))
+	{
+		mpeg2_err("parsing NULL Data. ignoring...\n");
+		return 0;
+	}
 
-    while(Position < call->len)
-    {
-        int32_t PacketLength = (call->len - Position) <= MAX_PES_PACKET_SIZE ?
-                           (call->len - Position) : MAX_PES_PACKET_SIZE;
+	if (call->fd < 0)
+	{
+		mpeg2_err("file pointer < 0. ignoring ...\n");
+		return 0;
+	}
 
-        int32_t Remaining = call->len - Position - PacketLength;
+	while (Position < call->len)
+	{
+		int32_t PacketLength = (call->len - Position) <= MAX_PES_PACKET_SIZE ?
+			(call->len - Position) : MAX_PES_PACKET_SIZE;
 
-        mpeg2_printf(20, "PacketLength=%d, Remaining=%d, Position=%d\n", PacketLength, Remaining, Position);
+		int32_t Remaining = call->len - Position - PacketLength;
 
-        struct iovec iov[2];
-        iov[0].iov_base = PesHeader;
-        iov[0].iov_len = InsertPesHeader (PesHeader, PacketLength, 0xe0, call->Pts, 0);
-        iov[1].iov_base = call->data + Position;
-        iov[1].iov_len = PacketLength;
+		mpeg2_printf(20, "PacketLength=%d, Remaining=%d, Position=%d\n", PacketLength, Remaining, Position);
 
-        ssize_t l = call->WriteV(call->fd, iov, 2);
-        if (l < 0)
-        {
-            len = l;
-            break;
-        }
-        len += l;
+		struct iovec iov[2];
+		iov[0].iov_base = PesHeader;
+		iov[0].iov_len = InsertPesHeader(PesHeader, PacketLength, 0xe0, call->Pts, 0);
+		iov[1].iov_base = call->data + Position;
+		iov[1].iov_len = PacketLength;
 
-        Position += PacketLength;
-        call->Pts = INVALID_PTS_VALUE;
-    }
+		ssize_t l = call->WriteV(call->fd, iov, 2);
+		if (l < 0)
+		{
+			len = l;
+			break;
+		}
+		len += l;
 
-    mpeg2_printf(10, "< len %d\n", len);
-    return len;
+		Position += PacketLength;
+		call->Pts = INVALID_PTS_VALUE;
+	}
+
+	mpeg2_printf(10, "< len %d\n", len);
+	return len;
 }
 
 /* ***************************** */
 /* Writer  Definition            */
 /* ***************************** */
-static WriterCaps_t caps = {
-    "mpeg2",
-    eVideo,
-    "V_MPEG2",
-    VIDEO_ENCODING_AUTO,
-    -1,
-    -1,
+static WriterCaps_t caps =
+{
+	"mpeg2",
+	eVideo,
+	"V_MPEG2",
+	VIDEO_ENCODING_AUTO,
+	-1,
+	-1,
 };
 
-struct Writer_s WriterVideoMPEG2 = {
-    &reset,
-    &writeData,
-    NULL,
-    &caps
+struct Writer_s WriterVideoMPEG2 =
+{
+	&reset,
+	&writeData,
+	&caps
 };
 
-static WriterCaps_t h264_caps = {
-    "mpges_h264",
-    eVideo,
-    "V_MPEG2/H264",
-    VIDEO_ENCODING_H264,
-    -1,
-    -1
+static WriterCaps_t h264_caps =
+{
+	"mpges_h264",
+	eVideo,
+	"V_MPEG2/H264",
+	VIDEO_ENCODING_H264,
+	-1,
+	-1
 };
 
-struct Writer_s WriterVideoMPEGH264 = {
-    &reset,
-    &writeData,
-    NULL,
-    &h264_caps
+struct Writer_s WriterVideoMPEGH264 =
+{
+	&reset,
+	&writeData,
+	&h264_caps
 };

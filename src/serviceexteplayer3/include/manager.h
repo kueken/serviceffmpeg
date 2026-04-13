@@ -4,105 +4,124 @@
 #include <stdio.h>
 #include <stdint.h>
 
-typedef enum {
-    MANAGER_ADD,
-    MANAGER_LIST,
-    MANAGER_GET,
-    MANAGER_GETNAME,
-    MANAGER_SET,
-    MANAGER_GETENCODING,
-    MANAGER_DEL,
-    MANAGER_GET_TRACK,
-    MANAGER_GET_TRACK_DESC,
-    MANAGER_INIT_UPDATE,
-    MANAGER_UPDATED_TRACK_INFO,
-    MANAGER_REGISTER_UPDATED_TRACK_INFO,
-    MANAGER_REF_LIST,
-    MANAGER_REF_LIST_SIZE,
+#include <libavutil/avutil.h>
+#include <libavutil/time.h>
+#include <libavformat/avformat.h>
+#include <libswresample/swresample.h>
+#include <libavutil/opt.h>
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 0, 100)
+#include <libavcodec/bsf.h>
+#include <libavcodec/avcodec.h>
+#endif
+
+typedef enum
+{
+	MANAGER_ADD,
+	MANAGER_LIST,
+	MANAGER_GET,
+	MANAGER_GETNAME,
+	MANAGER_SET,
+	MANAGER_GETENCODING,
+	MANAGER_DEL,
+	MANAGER_GET_TRACK,
+	MANAGER_GET_TRACK_DESC,
+	MANAGER_INIT_UPDATE,
+	MANAGER_UPDATED_TRACK_INFO,
+	MANAGER_REGISTER_UPDATED_TRACK_INFO,
+	MANAGER_REF_LIST,
+	MANAGER_REF_LIST_SIZE
 } ManagerCmd_t;
 
-typedef enum {
-    eTypeES,
-    eTypePES
+typedef enum
+{
+	eTypeES,
+	eTypePES
 } eTrackTypeEplayer;
 
-typedef struct Track_s {
-    char *                Name;
-    char *                Encoding;
-    int32_t               Id;
-    int32_t               AVIdx;
+typedef struct Track_s
+{
+	char                 *Name;
+	char                 *Encoding;
+	int32_t               Id;
+	int32_t               AVIdx;
 
-    /* new field for ffmpeg - add at the end so no problem
-    * can occur with not changed srt saa container
-    */
-    char                  *language;
+	/* new field for ffmpeg - add at the end so no problem
+	 * can occur with not changed srt saa container
+	 */
+	char                 *language;
 
-    /* length of track */
-    int64_t               duration;
-    uint32_t              frame_rate;
-    uint32_t              TimeScale;
-    int32_t               version;
-    long long int         pts;
-    long long int         dts;
+	/* length of track */
+	int64_t               duration;
+	uint32_t              frame_rate;
+	uint32_t              TimeScale;
+	int32_t               version;
+	long long int         pts;
+	long long int         dts;
 
-    /* for later use: */
-    eTrackTypeEplayer     type;
-    int                   width;
-    int                   height;
-    int32_t               aspect_ratio_num;
-    int32_t               aspect_ratio_den;
+	/* for later use: */
+	eTrackTypeEplayer     type;
+	int                   width;
+	int                   height;
+	int32_t               aspect_ratio_num;
+	int32_t               aspect_ratio_den;
 
-    /* stream from ffmpeg */
-    void               *  stream;
-    /* AVCodecContext  for steam */
-    void               *  avCodecCtx;
-    /* codec extra data (header or some other stuff) */
-    void               *  extraData;
-    int		              extraSize;
+	/* stream from ffmpeg */
+	AVStream             *stream;
+	/* AVCodecContext  for steam */
+	void                 *avCodecCtx;
+	/* codec extra data (header or some other stuff) */
+	uint8_t              *extraData;
+	int                   extraSize;
 
-    uint8_t*              aacbuf;
-    unsigned int          aacbuflen;
-    int                   have_aacheader;
+	uint8_t              *aacbuf;
+	unsigned int          aacbuflen;
+	int                   have_aacheader;
 
-    /* If player2 or the elf do not support decoding of audio codec set this.
-     * AVCodec is than used for softdecoding and stream will be injected as PCM */
-    int                   inject_as_pcm;
-    int                   inject_raw_pcm;
+	/* If player2 or the elf do not support decoding of audio codec set this.
+	 * AVCodec is than used for softdecoding and stream will be injected as PCM */
+	int                   inject_as_pcm;
+	int                   inject_raw_pcm;
 
-    int                   pending;
+	int                   pending;
+	long long int         chapter_start;
+	long long int         chapter_end;
 } Track_t;
 
 typedef struct TrackDescription_s
 {
-    int                   Id;
-    char *                Name;
-    char *                Encoding;
-    unsigned int          frame_rate;
-    int                   width;
-    int                   height;
-    int32_t               aspect_ratio_num;
-    int32_t               aspect_ratio_den;
-    int                   progressive;
+	int                   Id;
+	char                 *Name;
+	char                 *Encoding;
+	unsigned int          frame_rate;
+	int                   width;
+	int                   height;
+	int32_t               aspect_ratio_num;
+	int32_t               aspect_ratio_den;
+	int                   progressive;
 
 } TrackDescription_t;
 
+struct Context_s;
+typedef struct Context_s Context_t;
+
 typedef struct Manager_s
 {
-    char * Name;
-    int (* Command) (/*Context_t*/void  *, ManagerCmd_t, void *);
-    char ** Capabilities;
+	char *Name;
+	int (* Command)(Context_t *, ManagerCmd_t, void *);
+	char **Capabilities;
 
 } Manager_t;
 
 typedef struct ManagerHandler_s
 {
-    char *Name;
-    Manager_t *audio;
-    Manager_t *video;
-    Manager_t *subtitle;
+	char *Name;
+	Manager_t *audio;
+	Manager_t *video;
+	Manager_t *subtitle;
+	Manager_t *chapter;
 } ManagerHandler_t;
 
-void freeTrack(Track_t* track);
-void copyTrack(Track_t* to, Track_t* from);
+void freeTrack(Track_t *track);
+void copyTrack(Track_t *to, Track_t *from);
 
 #endif

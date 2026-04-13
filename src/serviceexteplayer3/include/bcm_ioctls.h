@@ -13,29 +13,30 @@
 
 typedef struct video_codec_data
 {
-    int32_t length;
-    uint8_t *data;
+	int32_t length;
+	uint8_t *data;
 } video_codec_data_t;
 #define VIDEO_SET_CODEC_DATA _IOW('o', 80, video_codec_data_t)
 
-typedef enum {
-    CT_MPEG1,
-    CT_MPEG2,
-    CT_H264,
-    CT_DIVX311,
-    CT_DIVX4,
-    CT_MPEG4_PART2,
-    CT_VC1,
-    CT_VC1_SM,
-    CT_H265,
-    CT_SPARK,
-    CT_VP6,
-    CT_VP8,
-    CT_VP9
+typedef enum
+{
+	CT_MPEG1,
+	CT_MPEG2,
+	CT_H264,
+	CT_DIVX311,
+	CT_DIVX4,
+	CT_MPEG4_PART2,
+	CT_VC1,
+	CT_VC1_SM,
+	CT_H265,
+	CT_SPARK,
+	CT_VP6,
+	CT_VP8,
+	CT_VP9
 } video_codec_type_t;
 
-
-typedef enum {
+typedef enum
+{
 	STREAMTYPE_UNKNOWN = -1,
 	STREAMTYPE_MPEG2 = 0,
 	STREAMTYPE_MPEG4_H264 = 1,
@@ -51,15 +52,16 @@ typedef enum {
 	STREAMTYPE_DIVX311 = 13,
 	STREAMTYPE_DIVX4 = 14,
 	STREAMTYPE_DIVX5 = 15,
-	STREAMTYPE_VB6 = 18, /* 17 is also valid for ZGEMMA STBs*/
+	STREAMTYPE_VB6 = 18,   /* 17 is also valid for ZGEMMA STBs*/
 	STREAMTYPE_SPARK = 21,
 	STREAMTYPE_MJPEG = 30,
 	STREAMTYPE_RV30 = 31,  /* rv30: RealVideo 8, suspected to based largely on an early draft of H.264 (included with RealPlayer 8)*/
-	STREAMTYPE_RV40 = 32, /* RealVideo 9, RealVideo 10*/
-	STREAMTYPE_AVS2 = 40,
+	STREAMTYPE_RV40 = 32,  /* RealVideo 9, RealVideo 10*/
+	STREAMTYPE_AVS2 = 40
 } video_stream_type_t;
 
-typedef enum {
+typedef enum
+{
 	AUDIOTYPE_UNKNOWN = -1,
 	AUDIOTYPE_AC3 = 0,
 	AUDIOTYPE_MPEG = 1,
@@ -79,8 +81,4 @@ typedef enum {
 	AUDIOTYPE_RAW = 0x30
 } audio_stream_type_t;
 
-
-
-
 #endif /* H_DVB_BCM_H */
-

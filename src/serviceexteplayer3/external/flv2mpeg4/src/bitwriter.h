@@ -31,7 +31,7 @@
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 typedef struct _BW
 {
-	uint8* buf;
+	uint8 *buf;
 	uint32 size;
 	uint32 pos;
 	uint32 bitoffset;
@@ -40,21 +40,21 @@ typedef struct _BW
 } BW;
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-static void __inline clear_bw(BW* p)
+static inline void clear_bw(BW *p)
 {
 	p->pos = 0;
 	p->bitoffset = 0;
 	p->tmp = 0;
 }
 
-static void __inline init_bw(BW* p, uint8* buf, uint32 size)
+static inline void init_bw(BW *p, uint8 *buf, uint32 size)
 {
 	p->buf = buf;
 	p->size = size;
 	clear_bw(p);
 }
 
-static void __inline forword_bits(BW* p, uint32 bits)
+static inline void forword_bits(BW *p, uint32 bits)
 {
 	p->bitoffset += bits;
 
@@ -62,15 +62,15 @@ static void __inline forword_bits(BW* p, uint32 bits)
 	{
 		p->buf[p->pos++] = (p->tmp >> 24) & 0xff;
 		p->buf[p->pos++] = (p->tmp >> 16) & 0xff;
-		p->buf[p->pos++] = (p->tmp >> 8 ) & 0xff;
-		p->buf[p->pos++] = (p->tmp >> 0 ) & 0xff;
+		p->buf[p->pos++] = (p->tmp >> 8) & 0xff;
+		p->buf[p->pos++] = (p->tmp >> 0) & 0xff;
 
 		p->tmp = 0;
 		p->bitoffset -= 32;
 	}
 }
 
-static void __inline put_bits(BW* p, uint32 bits, uint32 value)
+static inline void put_bits(BW *p, uint32 bits, uint32 value)
 {
 	uint32 shift = 32 - p->bitoffset - bits;
 
@@ -90,7 +90,7 @@ static void __inline put_bits(BW* p, uint32 bits, uint32 value)
 	}
 }
 
-static void __inline pad_to_boundary(BW* p)
+static inline void pad_to_boundary(BW *p)
 {
 	uint32 bits = 8 - (p->bitoffset % 8);
 	if (bits < 8)
@@ -99,52 +99,54 @@ static void __inline pad_to_boundary(BW* p)
 	}
 }
 
-static void __inline flash_bw(BW* p)
+static inline void flash_bw(BW *p)
 {
 	pad_to_boundary(p);
 
 	switch (p->bitoffset)
 	{
-	case 0: // nothing to do
-		break;
-	case 8:
-		p->buf[p->pos++] = (p->tmp >> 24) & 0xff;
-		break;
-	case 16:
-		p->buf[p->pos++] = (p->tmp >> 24) & 0xff;
-		p->buf[p->pos++] = (p->tmp >> 16) & 0xff;
-		break;
-	case 24:
-		p->buf[p->pos++] = (p->tmp >> 24) & 0xff;
-		p->buf[p->pos++] = (p->tmp >> 16) & 0xff;
-		p->buf[p->pos++] = (p->tmp >> 8 ) & 0xff;
-		break;
-	default:
-		break;
+		case 0: // nothing to do
+			break;
+		case 8:
+			p->buf[p->pos++] = (p->tmp >> 24) & 0xff;
+			break;
+		case 16:
+			p->buf[p->pos++] = (p->tmp >> 24) & 0xff;
+			p->buf[p->pos++] = (p->tmp >> 16) & 0xff;
+			break;
+		case 24:
+			p->buf[p->pos++] = (p->tmp >> 24) & 0xff;
+			p->buf[p->pos++] = (p->tmp >> 16) & 0xff;
+			p->buf[p->pos++] = (p->tmp >> 8) & 0xff;
+			break;
+		default:
+			break;
 	}
 
 	p->tmp = 0;
 	p->bitoffset = 0;
 }
 
-static uint32 __inline get_bw_pos(BW* p)
+static inline uint32 get_bw_pos(BW *p)
 {
-	return p->pos* 8 + p->bitoffset;
+	return p->pos * 8 + p->bitoffset;
 }
 
-static void __inline put_vlcdec(BW* bw, VLCDEC* vlcdec)
+static inline void put_vlcdec(BW *bw, VLCDEC *vlcdec)
 {
 	put_bits(bw, vlcdec->bits, vlcdec->value);
 }
 
 // M4V ADDED
-static void __inline m4v_stuffing(BW* p)
+static inline void m4v_stuffing(BW *p)
 {
 	int length;
 
 	put_bits(p, 1, 0);
 	length = (- p->bitoffset) & 7;
-	if (length) put_bits(p, length, (1 << length) - 1);
+
+	if (length)
+		put_bits(p, length, (1 << length) - 1);
 }
 
 #endif // BITWRITER_H
