@@ -51,8 +51,6 @@ serviceexteplayer3_la_SOURCES += \
 	output/writer/mipsel/wmv.c \
 	output/writer/mipsel/vc1.c \
 	playback/playback.c \
-	tools/debug.c \
-	tools/strbuffer.c \
 	external/ffmpeg/src/bitstream.c \
 	external/ffmpeg/src/latmenc.c \
 	external/ffmpeg/src/mpeg4audio.c \
