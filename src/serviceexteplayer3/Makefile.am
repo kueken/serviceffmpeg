@@ -1,9 +1,17 @@
 plugindir = $(libdir)/enigma2/python/Plugins/SystemPlugins/ServiceExteplayer3
-
+plugin_LTLIBRARIES = serviceexteplayer3.la
+# E2 Service bridge
+serviceexteplayer3_la_SOURCES = \
+	serviceexteplayer3.cpp \
+	serviceexteplayer3.h \
+	pythonmodule.cpp
+	
 AUTOMAKE_OPTIONS = subdir-objects
 AM_CFLAGS = -Wall -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE
 
 CXXFLAGS = -Wall
+
+noinst_LIBRARIES = serviceexteplayer3.a
 
 AM_CPPFLAGS   = -I$(srcdir)/include
 AM_CPPFLAGS  += -I$(top_srcdir)/include
@@ -11,36 +19,28 @@ AM_CPPFLAGS  += -I$(srcdir)/external
 
 AM_CXXFLAGS   = -fno-rtti -fno-exceptions -fno-strict-aliasing
 
-plugin_LTLIBRARIES = serviceexteplayer3.la
+SOURCE_FILES  = container/container.c
+SOURCE_FILES += container/container_ffmpeg.c
+SOURCE_FILES += manager/manager.c
+SOURCE_FILES += manager/audio.c
+SOURCE_FILES += manager/video.c
+SOURCE_FILES += manager/subtitle.c
+SOURCE_FILES += output/graphic_subtitle.c
+SOURCE_FILES += output/output_subtitle.c
+SOURCE_FILES += output/output.c
+SOURCE_FILES += output/writer/common/pes.c
+SOURCE_FILES += output/writer/common/misc.c
+SOURCE_FILES += output/writer/common/writer.c
+SOURCE_FILES += output/linuxdvb_buffering.c
+SOURCE_FILES += playback/playback.c
+SOURCE_FILES += external/ffmpeg/src/bitstream.c
+SOURCE_FILES += external/ffmpeg/src/latmenc.c
+SOURCE_FILES += external/ffmpeg/src/mpeg4audio.c
+SOURCE_FILES += external/ffmpeg/src/xiph.c
+SOURCE_FILES += external/plugins/src/png.c
 
-# E2 Service bridge
-serviceexteplayer3_la_SOURCES = \
-	serviceexteplayer3.cpp \
-	serviceexteplayer3.h \
-	pythonmodule.cpp
-
-# exteplayer3 C sources — built directly into the .so
-serviceexteplayer3_la_SOURCES += \
-	main/exteplayer.c \
-	container/container.c \
-	container/container_ffmpeg.c \
-	container/buff_ffmpeg.c \
-	container/wrapped_ffmpeg.c \
-	container/flv2mpeg4_ffmpeg.c \
-	container/mpeg4p2_ffmpeg.c \
-	manager/manager.c \
-	manager/audio.c \
-	manager/video.c \
-	manager/subtitle.c \
-	output/output.c \
-	output/output_subtitle.c \
-	output/linuxdvb_buffering.c \
+SOURCE_FILES += \
 	output/linuxdvb_mipsel.c \
-	output/linuxdvb_fake.c \
-	output/graphic_subtitle.c \
-	output/writer/common/pes.c \
-	output/writer/common/misc.c \
-	output/writer/common/writer.c \
 	output/writer/mipsel/writer.c \
 	output/writer/mipsel/aac.c \
 	output/writer/mipsel/ac3.c \
@@ -58,50 +58,8 @@ serviceexteplayer3_la_SOURCES += \
 	output/writer/mipsel/divx3.c \
 	output/writer/mipsel/vp.c \
 	output/writer/mipsel/wmv.c \
-	output/writer/mipsel/vc1.c \
-	playback/playback.c \
-	external/ffmpeg/src/bitstream.c \
-	external/ffmpeg/src/latmenc.c \
-	external/ffmpeg/src/mpeg4audio.c \
-	external/ffmpeg/src/xiph.c \
-	external/flv2mpeg4/src/m4vencode.c \
-	external/flv2mpeg4/src/flvdecoder.c \
-	external/flv2mpeg4/src/dcprediction.c \
-	external/flv2mpeg4/src/flv2mpeg4.c \
-	external/plugins/src/png.c
+	output/writer/mipsel/vc1.c
 
-serviceexteplayer3_la_CFLAGS = \
-	-D_FILE_OFFSET_BITS=64 \
-	-D_LARGEFILE64_SOURCE \
-	-D_LARGEFILE_SOURCE \
-	-DHAVE_FLV2MPEG4_CONVERTER \
-	-DAUDIO_GET_PTS=VIDEO_GET_PTS \
-	-Iinclude \
-	-Iexternal \
-	-Iexternal/flv2mpeg4
+serviceexteplayer3_a_SOURCES = $(SOURCE_FILES)
 
-serviceexteplayer3_la_CXXFLAGS = \
-	$(ENIGMA2_CFLAGS) \
-	$(SIGCPP_CFLAGS) \
-	$(PYTHON_CFLAGS) \
-	-fPIC \
-	-std=c++17 \
-	-Iinclude \
-	-Iexternal \
-	-Iexternal/flv2mpeg4
-
-serviceexteplayer3_la_LIBADD = \
-	$(ENIGMA2_LIBS) \
-	$(SIGCPP_LIBS) \
-	$(PYTHON_LIBS) \
-	$(FFMPEG_LIBS) \
-	-ldl \
-	-lpthread \
-	-lpng
-
-serviceexteplayer3_la_LDFLAGS = \
-	-module \
-	-avoid-version \
-	-shared
-	
 SERVICEEXTEPLAYER3_LIBS = serviceexteplayer3.la -lswscale -ldl -lpthread -lavformat -lavcodec -lavutil -lswresample
