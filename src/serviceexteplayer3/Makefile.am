@@ -8,7 +8,10 @@ plugin_LTLIBRARIES = serviceexteplayer3.la
 serviceexteplayer3_la_SOURCES = \
 	serviceexteplayer3.cpp \
 	serviceexteplayer3.h \
-	pythonmodule.cpp \
+	pythonmodule.cpp
+
+# exteplayer3 C sources — built directly into the .so
+serviceexteplayer3_la_SOURCES += \
 	main/exteplayer.c \
 	container/container.c \
 	container/container_ffmpeg.c \
@@ -66,9 +69,9 @@ serviceexteplayer3_la_CFLAGS = \
 	-D_LARGEFILE_SOURCE \
 	-DHAVE_FLV2MPEG4_CONVERTER \
 	-DAUDIO_GET_PTS=VIDEO_GET_PTS \
-	-I$(srcdir)/include \
-	-I$(srcdir)/external \
-	-I$(srcdir)/external/flv2mpeg4
+	-Iinclude \
+	-Iexternal \
+	-Iexternal/flv2mpeg4
 
 serviceexteplayer3_la_CXXFLAGS = \
 	$(ENIGMA2_CFLAGS) \
@@ -76,9 +79,9 @@ serviceexteplayer3_la_CXXFLAGS = \
 	$(PYTHON_CFLAGS) \
 	-fPIC \
 	-std=c++17 \
-	-I$(srcdir)/include \
-	-I$(srcdir)/external \
-	-I$(srcdir)/external/flv2mpeg4
+	-Iinclude \
+	-Iexternal \
+	-Iexternal/flv2mpeg4
 
 serviceexteplayer3_la_LIBADD = \
 	$(ENIGMA2_LIBS) \
@@ -93,3 +96,8 @@ serviceexteplayer3_la_LDFLAGS = \
 	-module \
 	-avoid-version \
 	-shared
+	
+AM_CPPFLAGS = \
+    -I$(top_srcdir)/src/serviceexteplayer3 \
+    -I$(top_srcdir)/src/serviceexteplayer3/external \
+    -I$(top_srcdir)/src/serviceexteplayer3/include
