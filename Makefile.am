@@ -1,3 +1,3 @@
 ACLOCAL_AMFLAGS = -I m4
 
-SUBDIRS = src plugin
+SUBDIRS = src serviceexteplayer3 plugin

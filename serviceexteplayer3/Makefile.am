@@ -1,3 +1,5 @@
+AUTOMAKE_OPTIONS = subdir-objects
+
 AM_CFLAGS = \
 	-Wall
 
@@ -13,21 +15,10 @@ plugindir = $(libdir)/enigma2/python/Plugins/SystemPlugins/ServiceExteplayer3
 
 plugin_LTLIBRARIES = serviceexteplayer3.la
 
-# E2 Service bridge
 serviceexteplayer3_la_SOURCES = \
 	serviceexteplayer3.cpp \
 	serviceexteplayer3.h \
 	pythonmodule.cpp
-
-serviceexteplayer3_la_CFLAGS = \
-	-D_FILE_OFFSET_BITS=64 \
-	-D_LARGEFILE64_SOURCE \
-	-D_LARGEFILE_SOURCE \
-	-DHAVE_FLV2MPEG4_CONVERTER \
-	-DAUDIO_GET_PTS=VIDEO_GET_PTS \
-	-Iinclude \
-	-Iexternal \
-	-Iexternal/flv2mpeg4
 
 serviceexteplayer3_la_CXXFLAGS = \
 	$(ENIGMA2_CFLAGS) \
@@ -35,11 +26,12 @@ serviceexteplayer3_la_CXXFLAGS = \
 	$(PYTHON_CFLAGS) \
 	-fPIC \
 	-std=c++17 \
-	-Iinclude \
-	-Iexternal \
-	-Iexternal/flv2mpeg4
+	-I$(top_srcdir)/src/exteplayer3/include \
+	-I$(top_srcdir)/src/exteplayer3/external \
+	-I$(top_srcdir)/src/exteplayer3/external/flv2mpeg4
 
 serviceexteplayer3_la_LIBADD = \
+	$(top_builddir)/src/exteplayer3/libexteplayer3.a \
 	$(ENIGMA2_LIBS) \
 	$(SIGCPP_LIBS) \
 	$(PYTHON_LIBS) \
@@ -52,4 +44,3 @@ serviceexteplayer3_la_LDFLAGS = \
 	-module \
 	-avoid-version \
 	-shared
-
