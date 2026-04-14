@@ -56,9 +56,6 @@ SOURCE_FILES += \
 	output/writer/mipsel/wmv.c \
 	output/writer/mipsel/vc1.c
 
-serviceexteplayer3_a_SOURCES = $(SOURCE_FILES)
+exteplayer3_a_SOURCES = $(SOURCE_FILES)
 
-SERVICEEXTEPLAYER3_LIBS = serviceexteplayer3.la -lswscale -ldl -lpthread -lavformat -lavcodec -lavutil -lswresample
-
-all: $(BIN)
-
+EXTEPLAYER3_LIBS = exteplayer3.la -lswscale -ldl -lpthread -lavformat -lavcodec -lavutil -lswresample
