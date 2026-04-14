@@ -3,6 +3,8 @@ AM_CFLAGS = -Wall -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOUR
 
 CXXFLAGS = -Wall
 
+noinst_LIBRARIES = libeplayer3.a
+
 AM_CPPFLAGS   = -I$(srcdir)/include
 AM_CPPFLAGS  += -I$(top_srcdir)/include
 AM_CPPFLAGS  += -I$(srcdir)/external
