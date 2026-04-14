@@ -3,7 +3,7 @@ CFLAGS += -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE -D_LARGEFILE_SOURCE -DHAV
 CFLAGS += -DAUDIO_GET_PTS=VIDEO_GET_PTS
 LDFLAGS += -lswscale -ldl -lpthread -lavformat -lavcodec -lavutil -lswresample
 
-SRC_DIR := src
+SRC_DIR := src/exteplayer3
 OBJ_DIR := obj
 BIN := exteplayer3
 
