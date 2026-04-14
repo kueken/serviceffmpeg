@@ -1,6 +1,12 @@
 AUTOMAKE_OPTIONS = subdir-objects
-AM_CFLAGS = -Wall -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE
-
+AM_CFLAGS = \
+	-Wall \
+	-D_LARGEFILE_SOURCE \
+	-D_FILE_OFFSET_BITS=64 \
+	-D_LARGEFILE64_SOURCE \
+	-DHAVE_FLV2MPEG4_CONVERTER \
+	-DAUDIO_GET_PTS=VIDEO_GET_PTS
+	
 CXXFLAGS = -Wall
 
 noinst_LIBRARIES = libexteplayer3.a
@@ -8,6 +14,7 @@ noinst_LIBRARIES = libexteplayer3.a
 AM_CPPFLAGS   = -I$(srcdir)/include
 AM_CPPFLAGS  += -I$(top_srcdir)/include
 AM_CPPFLAGS  += -I$(srcdir)/external
+AM_CPPFLAGS  += -I$(srcdir)/external/flv2mpeg4
 
 AM_CXXFLAGS   = -fno-rtti -fno-exceptions -fno-strict-aliasing
 
@@ -37,6 +44,10 @@ SOURCE_FILES += external/plugins/src/png.c
 
 SOURCE_FILES += \
 	output/linuxdvb_mipsel.c \
+	output/linuxdvb_fake.c \
+	output/writer/common/pes.c \
+	output/writer/common/misc.c \
+	output/writer/common/writer.c \
 	output/writer/mipsel/writer.c \
 	output/writer/mipsel/aac.c \
 	output/writer/mipsel/ac3.c \
