@@ -1,12 +1,11 @@
-AM_CFLAGS = \
-	-Wall
+AUTOMAKE_OPTIONS = subdir-objects
 
 AM_CPPFLAGS = \
-	@PYTHON_CPPFLAGS@ \
 	-include Python.h
 
 AM_CXXFLAGS = \
 	-Wall \
+	@PYTHON_CFLAGS@ \
 	@ENIGMA2_CFLAGS@
 
 plugindir = $(libdir)/enigma2/python/Plugins/SystemPlugins/ServiceExteplayer3
