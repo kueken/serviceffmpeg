@@ -1,1 +1,1 @@
-SUBDIRS = serviceexteplayer3
+SUBDIRS = exteplayer3

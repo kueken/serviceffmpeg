@@ -1,9 +1,12 @@
 AUTOMAKE_OPTIONS = subdir-objects
-AM_CFLAGS = -Wall -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE
+CC ?= gcc
+CFLAGS += -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE -D_LARGEFILE_SOURCE -DHAVE_FLV2MPEG4_CONVERTER
+CFLAGS += -DAUDIO_GET_PTS=VIDEO_GET_PTS
+LDFLAGS += -lswscale -ldl -lpthread -lavformat -lavcodec -lavutil -lswresample
 
-CXXFLAGS = -Wall
-
-noinst_LIBRARIES = serviceexteplayer3.a
+SRC_DIR := src
+OBJ_DIR := obj
+BIN := exteplayer3
 
 AM_CPPFLAGS   = -I$(srcdir)/include
 AM_CPPFLAGS  += -I$(top_srcdir)/include
@@ -54,4 +57,19 @@ SOURCE_FILES += \
 
 serviceexteplayer3_a_SOURCES = $(SOURCE_FILES)
 
-SERVICEEXTEPLAYER3_LIBS = serviceexteplayer3.la -lswscale -ldl -lpthread -lavformat -lavcodec -lavutil -lswresample
+OBJS := $(patsubst %.c, $(OBJ_DIR)/%.o, $(SOURCE_FILES))
+
+all: $(BIN)
+
+$(BIN): $(OBJS)
+	$(CC) $(OBJS) $(LDFLAGS) -o $(BIN)
+
+$(OBJ_DIR)/%.o: %.c | $(OBJ_DIR)
+	mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Iinclude -Iexternal -Iexternal/flv2mpeg4 -c $< -o $@
+
+$(OBJ_DIR):
+	mkdir -p $(OBJ_DIR)
+
+clean:
+	rm -rf $(OBJ_DIR) $(BIN)

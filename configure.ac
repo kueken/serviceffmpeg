@@ -48,7 +48,8 @@ CXXFLAGS="$CXXFLAGS -Wall -Wno-deprecated -std=c++17"
 AC_CONFIG_FILES([
     Makefile
     src/Makefile
-    src/serviceexteplayer3/Makefile
+    src/exteplayer3/Makefile
+    serviceexteplayer3/Makefile
     plugin/Makefile
 ])
 AC_OUTPUT
