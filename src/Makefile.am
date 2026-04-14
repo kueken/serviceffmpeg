@@ -1,1 +1,1 @@
-SUBDIRS = serviceexteplayer3 plugin
+SUBDIRS = serviceexteplayer3

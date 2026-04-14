@@ -49,7 +49,7 @@ AC_CONFIG_FILES([
     Makefile
     src/Makefile
     src/serviceexteplayer3/Makefile
-    src/plugin/Makefile
+    plugin/Makefile
 ])
 AC_OUTPUT
 
