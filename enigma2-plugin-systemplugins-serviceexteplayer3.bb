@@ -23,7 +23,7 @@ inherit autotools pkgconfig pythonnative python3-compileall
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
 PROVIDES  += "virtual/enigma2-mediaservice"
-RPROVIDES:${PN} += "virtual/enigma2-mediaservice"
+RPROVIDES:${PN} += "virtual-enigma2-mediaservice"
 
 EXTRA_OECONF = " \
     BUILD_SYS=${BUILD_SYS} \
@@ -33,9 +33,9 @@ EXTRA_OECONF = " \
 "
 
 FILES:${PN} = " \
+    ${bindir}/exteplayer3 \
     ${libdir}/enigma2/python/Plugins/SystemPlugins/ServiceExteplayer3/*.so \
     ${libdir}/enigma2/python/Plugins/SystemPlugins/ServiceExteplayer3/*.pyc \
-    ${libdir}/enigma2/python/Plugins/SystemPlugins/ServiceExteplayer3/__init__.pyc \
 "
 
 # Cannot coexist with other media services

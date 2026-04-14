@@ -1,4 +1,5 @@
 AUTOMAKE_OPTIONS = subdir-objects
+
 AM_CFLAGS = \
 	-Wall \
 	-D_LARGEFILE_SOURCE \
@@ -6,43 +7,32 @@ AM_CFLAGS = \
 	-D_LARGEFILE64_SOURCE \
 	-DHAVE_FLV2MPEG4_CONVERTER \
 	-DAUDIO_GET_PTS=VIDEO_GET_PTS
-	
-CXXFLAGS = -Wall
 
+AM_CPPFLAGS = \
+	-I$(srcdir)/include \
+	-I$(srcdir)/external \
+	-I$(srcdir)/external/flv2mpeg4
+
+AM_CXXFLAGS = -fno-rtti -fno-exceptions -fno-strict-aliasing
+
+# Static library — linked into serviceexteplayer3.so
 noinst_LIBRARIES = libexteplayer3.a
 
-AM_CPPFLAGS   = -I$(srcdir)/include
-AM_CPPFLAGS  += -I$(top_srcdir)/include
-AM_CPPFLAGS  += -I$(srcdir)/external
-AM_CPPFLAGS  += -I$(srcdir)/external/flv2mpeg4
-
-AM_CXXFLAGS   = -fno-rtti -fno-exceptions -fno-strict-aliasing
-
-SOURCE_FILES  = container/container.c
-SOURCE_FILES += container/container_ffmpeg.c
-SOURCE_FILES += manager/manager.c
-SOURCE_FILES += manager/audio.c
-SOURCE_FILES += manager/video.c
-SOURCE_FILES += manager/subtitle.c
-SOURCE_FILES += output/graphic_subtitle.c
-SOURCE_FILES += output/output_subtitle.c
-SOURCE_FILES += output/output.c
-SOURCE_FILES += output/writer/common/pes.c
-SOURCE_FILES += output/writer/common/misc.c
-SOURCE_FILES += output/writer/common/writer.c
-SOURCE_FILES += output/linuxdvb_buffering.c
-SOURCE_FILES += playback/playback.c
-SOURCE_FILES += external/ffmpeg/src/bitstream.c
-SOURCE_FILES += external/ffmpeg/src/latmenc.c
-SOURCE_FILES += external/ffmpeg/src/mpeg4audio.c
-SOURCE_FILES += external/ffmpeg/src/xiph.c
-SOURCE_FILES += external/flv2mpeg4/src/m4vencode.c
-SOURCE_FILES += external/flv2mpeg4/src/flvdecoder.c
-SOURCE_FILES += external/flv2mpeg4/src/dcprediction.c
-SOURCE_FILES += external/flv2mpeg4/src/flv2mpeg4.c
-SOURCE_FILES += external/plugins/src/png.c
-
-SOURCE_FILES += \
+COMMON_SOURCES = \
+	container/container.c \
+	container/container_ffmpeg.c \
+	container/buff_ffmpeg.c \
+	container/wrapped_ffmpeg.c \
+	container/flv2mpeg4_ffmpeg.c \
+	container/mpeg4p2_ffmpeg.c \
+	manager/manager.c \
+	manager/audio.c \
+	manager/video.c \
+	manager/subtitle.c \
+	output/output.c \
+	output/output_subtitle.c \
+	output/graphic_subtitle.c \
+	output/linuxdvb_buffering.c \
 	output/linuxdvb_mipsel.c \
 	output/linuxdvb_fake.c \
 	output/writer/common/pes.c \
@@ -65,8 +55,33 @@ SOURCE_FILES += \
 	output/writer/mipsel/divx3.c \
 	output/writer/mipsel/vp.c \
 	output/writer/mipsel/wmv.c \
-	output/writer/mipsel/vc1.c
+	output/writer/mipsel/vc1.c \
+	playback/playback.c \
+	external/ffmpeg/src/bitstream.c \
+	external/ffmpeg/src/latmenc.c \
+	external/ffmpeg/src/mpeg4audio.c \
+	external/ffmpeg/src/xiph.c \
+	external/flv2mpeg4/src/m4vencode.c \
+	external/flv2mpeg4/src/flvdecoder.c \
+	external/flv2mpeg4/src/dcprediction.c \
+	external/flv2mpeg4/src/flv2mpeg4.c \
+	external/plugins/src/png.c
 
-libexteplayer3_a_SOURCES = $(SOURCE_FILES)
+libexteplayer3_a_SOURCES = $(COMMON_SOURCES)
 
-LIBEXTEPLAYER3_LIBS = libexteplayer3.la -lswscale -ldl -lpthread -lavformat -lavcodec -lavutil -lswresample
+# exteplayer3 binary — installed to /usr/bin/exteplayer3
+bin_PROGRAMS = exteplayer3
+
+exteplayer3_SOURCES = \
+	main/exteplayer.c \
+	$(COMMON_SOURCES)
+
+exteplayer3_LDADD = \
+	-lswscale \
+	-ldl \
+	-lpthread \
+	-lavformat \
+	-lavcodec \
+	-lavutil \
+	-lswresample \
+	-lpng
