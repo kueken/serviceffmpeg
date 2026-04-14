@@ -1,5 +1,3 @@
-AUTOMAKE_OPTIONS = subdir-objects
-
 AM_CFLAGS = \
 	-Wall
 
@@ -20,25 +18,8 @@ serviceexteplayer3_la_SOURCES = \
 	serviceexteplayer3.h \
 	pythonmodule.cpp
 
-serviceexteplayer3_la_CXXFLAGS = \
-	$(ENIGMA2_CFLAGS) \
-	$(SIGCPP_CFLAGS) \
-	$(PYTHON_CFLAGS) \
-	-fPIC \
-	-std=c++17 \
-	-I$(top_srcdir)/src/exteplayer3/include \
-	-I$(top_srcdir)/src/exteplayer3/external \
-	-I$(top_srcdir)/src/exteplayer3/external/flv2mpeg4
-
 serviceexteplayer3_la_LIBADD = \
-	$(top_builddir)/src/exteplayer3/libexteplayer3.a \
-	$(ENIGMA2_LIBS) \
-	$(SIGCPP_LIBS) \
-	$(PYTHON_LIBS) \
-	$(FFMPEG_LIBS) \
-	-ldl \
-	-lpthread \
-	-lpng
+	$(top_builddir)/src/exteplayer3/libexteplayer3.a
 
 serviceexteplayer3_la_LDFLAGS = \
 	-module \
