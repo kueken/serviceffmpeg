@@ -1,5 +1,3 @@
-plugindir = $(libdir)/enigma2/python/Plugins/SystemPlugins/ServiceExteplayer3
-
 AUTOMAKE_OPTIONS = subdir-objects
 AM_CFLAGS = -Wall -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE
 
@@ -54,8 +52,7 @@ SOURCE_FILES += \
 	output/writer/mipsel/wmv.c \
 	output/writer/mipsel/vc1.c
 
-serviceexteplayer3_a_SOURCES += \
-	$(SOURCE_FILES) \
+serviceexteplayer3_a_SOURCES = $(SOURCE_FILES) += \
 	serviceexteplayer3.cpp \
 	serviceexteplayer3.h \
 	pythonmodule.cpp
