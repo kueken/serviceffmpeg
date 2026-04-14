@@ -52,9 +52,6 @@ SOURCE_FILES += \
 	output/writer/mipsel/wmv.c \
 	output/writer/mipsel/vc1.c
 
-serviceexteplayer3_a_SOURCES = $(SOURCE_FILES) += \
-	serviceexteplayer3.cpp \
-	serviceexteplayer3.h \
-	pythonmodule.cpp
+serviceexteplayer3_a_SOURCES = $(SOURCE_FILES)
 
 SERVICEEXTEPLAYER3_LIBS = serviceexteplayer3.la -lswscale -ldl -lpthread -lavformat -lavcodec -lavutil -lswresample
