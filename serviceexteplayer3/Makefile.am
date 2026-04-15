@@ -20,6 +20,9 @@ serviceexteplayer3_la_SOURCES = \
 serviceexteplayer3_la_LIBADD = \
 	$(top_builddir)/src/exteplayer3/libexteplayer3.a
 
+libserviceexteplayer3_la_LIBADD = \
+	$(top_builddir)/src/serviceexteplayer3/libserviceexteplayer3.a
+
 serviceexteplayer3_la_LDFLAGS = \
 	-Wl,--whole-archive \
 	$(top_builddir)/src/exteplayer3/libexteplayer3.a \
@@ -27,3 +30,9 @@ serviceexteplayer3_la_LDFLAGS = \
 	-module \
 	-avoid-version \
 	-shared
+	
+libserviceexteplayer3_la_LDFLAGS = \
+	-Wl,--whole-archive \
+	$(top_builddir)/src/serviceexteplayer3/libserviceexteplayer3.a \
+	-Wl,--no-whole-archive \
+	-module -avoid-version
