@@ -58,7 +58,7 @@
 #include <lib/base/init_num.h>
 #include <lib/base/nconfig.h>
 #include <lib/dvb/epgcache.h>
-#include <lib/dvb/dvbtime.h>
+// #include <lib/dvb/dvbtime.h>
 #include <lib/dvb/decoder.h>
 #include <lib/gui/esubtitle.h>
 #include <lib/service/service.h>
@@ -66,22 +66,22 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <sys/prctl.h>
+// #include <sys/prctl.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
-#include <sys/ioctl.h>
+// #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
+// #include <time.h>
 
 /* DVB video ioctls needed to restore OSD after exteplayer3 */
 #include <linux/netlink.h>
-#include <linux/dvb/audio.h>
-#include <linux/dvb/video.h>
+// #include <linux/dvb/audio.h>
+// #include <linux/dvb/video.h>
 
 #ifndef EXTEPLAYER3_BIN
 #define EXTEPLAYER3_BIN "/usr/bin/exteplayer3"
