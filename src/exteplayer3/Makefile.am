@@ -20,7 +20,8 @@ AM_CPPFLAGS  += -I$(srcdir)/external/flv2mpeg4
 
 AM_CXXFLAGS   = -fno-rtti -fno-exceptions -fno-strict-aliasing
 
-SOURCE_FILES  = container/container.c
+SOURCE_FILES  =	main/exteplayer.c
+SOURCE_FILES += container/container.c
 SOURCE_FILES += container/container_ffmpeg.c
 SOURCE_FILES += manager/manager.c
 SOURCE_FILES += manager/audio.c
@@ -69,7 +70,6 @@ SOURCE_FILES += \
 bin_PROGRAMS = exteplayer3
 
 exteplayer3_SOURCES = \
-	main/exteplayer.c \
 	$(SOURCE_FILES)
 
 libexteplayer3_a_SOURCES = $(SOURCE_FILES)
