@@ -291,6 +291,14 @@ eServiceEp3::eServiceEp3(eServiceReference ref)
     m_nownext_timer = eTimer::create(eApp);
     CONNECT(m_nownext_timer->timeout, eServiceEp3::updateEpgCacheNowNext);
 
+    /* Launch player immediately in constructor — like serviceapp starts
+     * exteplayer3 in ExtEplayer3::ExtEplayer3(). This way the player is
+     * already running when start()/evStart are called. */
+    if (!launchPlayer()) {
+        m_state = stError;
+        eDebug("[serviceexteplayer3] launchPlayer failed in constructor");
+    }
+
     eDebug("[serviceexteplayer3] created: %s", m_ref.path.c_str());
 }
 
@@ -421,7 +429,7 @@ bool eServiceEp3::launchPlayer()
         eSocketNotifier::Read | eSocketNotifier::Priority | eSocketNotifier::Hungup);
     CONNECT(m_sn_read->activated, eServiceEp3::onStderrData);
 
-    /* m_state stays stIdle — onPlaybackPlay() sets stRunning and fires evStart */
+    m_state = stIdle; /* keep stIdle so start() guard passes — onPlaybackPlay sets stRunning */
     eDebug("[serviceexteplayer3] exteplayer3 pid=%d", (int)m_player_pid);
     return true;
 }
@@ -592,15 +600,8 @@ void eServiceEp3::onPlaybackOpen(const std::string &line)
 void eServiceEp3::onPlaybackPlay(const std::string &line)
 {
     if (json_int(line, "sts") == 0) {
-        if (m_state != stRunning) {
-            m_state = stRunning;
-            /* Fire evStart here — after exteplayer3 confirmed PLAYBACK_PLAY.
-             * Same pattern as servicehisilicon firing evStart from Netlink
-             * callback after HW player state=2. ServiceEventTracker receives
-             * evStart while MoviePlayer screen is on top of the stack. */
-            m_event((iPlayableService*)this, iPlayableService::evUpdatedEventInfo);
-            m_event((iPlayableService*)this, iPlayableService::evStart);
-        }
+        m_state = stRunning;
+        /* evStart already fired in start() — just signal updated info */
         m_event((iPlayableService*)this, iPlayableService::evUpdatedInfo);
         m_nownext_timer->startLongTimer(3);
         /* Request track lists and initial length */
@@ -840,16 +841,13 @@ RESULT eServiceEp3::connectEvent(
 
 RESULT eServiceEp3::start()
 {
-    ASSERT(m_state == stIdle);
-    if (!launchPlayer()) {
-        m_state = stError;
-        return -1;
-    }
-    /* Do NOT fire evStart here.
-     * evStart is fired from onPlaybackPlay() after exteplayer3 confirms
-     * PLAYBACK_PLAY — exactly like servicehisilicon fires evStart from
-     * its Netlink callback after the HW player confirms state=2.
-     * This ensures the ServiceEventTracker stack is fully settled. */
+    if (m_state == stError) return -1;
+    if (m_state == stRunning || m_state == stStopped || m_state == stPaused) return 0;
+
+    /* Fire evStart — player already launched in constructor like serviceapp.
+     * ServiceEventTracker stack is correct at this point. */
+    m_event((iPlayableService*)this, iPlayableService::evUpdatedEventInfo);
+    m_event((iPlayableService*)this, iPlayableService::evStart);
     return 0;
 }
 
