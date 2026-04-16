@@ -429,7 +429,7 @@ bool eServiceEp3::launchPlayer()
         eSocketNotifier::Read | eSocketNotifier::Priority | eSocketNotifier::Hungup);
     CONNECT(m_sn_read->activated, eServiceEp3::onStderrData);
 
-    m_state = stIdle; /* keep stIdle so start() guard passes — onPlaybackPlay sets stRunning */
+    m_state = stRunning;
     eDebug("[serviceexteplayer3] exteplayer3 pid=%d", (int)m_player_pid);
     return true;
 }
@@ -842,7 +842,7 @@ RESULT eServiceEp3::connectEvent(
 RESULT eServiceEp3::start()
 {
     if (m_state == stError) return -1;
-    if (m_state == stRunning || m_state == stStopped || m_state == stPaused) return 0;
+    if (m_state != stIdle) return -1;
 
     /* Fire evStart — player already launched in constructor like serviceapp.
      * ServiceEventTracker stack is correct at this point. */
