@@ -51,17 +51,27 @@
  */
 
 #include "serviceexteplayer3.h"
+#include <pthread.h>
+#include <errno.h>
 
 #include <lib/base/ebase.h>
 #include <lib/base/eerror.h>
-#include <lib/base/init.h>
 #include <lib/base/init_num.h>
+#include <lib/base/init.h>
+#include <lib/dvb/epgcache.h>
+#include <lib/dvb/metaparser.h>
+#include <lib/base/httpstream.h>
+#include <fstream>
 #include <lib/base/nconfig.h>
+#include <lib/base/object.h>
 #include <lib/dvb/epgcache.h>
 #include <lib/dvb/dvbtime.h>
 #include <lib/dvb/decoder.h>
+#include <lib/components/file_eraser.h>
 #include <lib/gui/esubtitle.h>
 #include <lib/service/service.h>
+#include <lib/gdi/gpixmap.h>
+#include <lib/dvb/db.h>
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -76,6 +86,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <lib/base/estring.h>
 #include <time.h>
 
 /* DVB video ioctls needed to restore OSD after exteplayer3 */
@@ -299,6 +310,8 @@ eServiceEp3::eServiceEp3(eServiceReference ref)
         eDebug("[serviceexteplayer3] launchPlayer failed in constructor");
     }
 
+    m_pump_conn = m_pump.connect(sigc::mem_fun(*this, &eServiceEp3::handleMessage));
+    m_pump_conn = m_pump.connect(sigc::mem_fun(*this, &eServiceEp3::handleMessage));
     eDebug("[serviceexteplayer3] created: %s", m_ref.path.c_str());
 }
 
@@ -425,9 +438,14 @@ bool eServiceEp3::launchPlayer()
     int flags = fcntl(m_stderr_fd, F_GETFL, 0);
     fcntl(m_stderr_fd, F_SETFL, flags | O_NONBLOCK);
 
-    m_sn_read = eSocketNotifier::create(eApp, m_stderr_fd,
-        eSocketNotifier::Read | eSocketNotifier::Priority | eSocketNotifier::Hungup);
-    CONNECT(m_sn_read->activated, eServiceEp3::onStderrData);
+    /* Start reader thread — reads exteplayer3 stderr and pumps
+     * lines into E2 mainloop via eFixedMessagePump.
+     * Replaces eSocketNotifier which floods the mainloop. */
+    m_reader_running = true;
+    if (pthread_create(&m_reader_thread, nullptr, readerThreadEntry, this) != 0) {
+        eDebug("[serviceexteplayer3] pthread_create failed: %s", strerror(errno));
+        m_reader_running = false;
+    }
 
     m_state = stRunning;
     eDebug("[serviceexteplayer3] exteplayer3 pid=%d", (int)m_player_pid);
@@ -517,36 +535,44 @@ std::string eServiceEp3::buildUri() const
 /* =========================================================================
  * stderr pipe → JSON line dispatcher
  * ======================================================================= */
-void eServiceEp3::onStderrData(int fd)
+/* Static thread entry */
+void *eServiceEp3::readerThreadEntry(void *arg)
+{
+    static_cast<eServiceEp3*>(arg)->readerThread();
+    return nullptr;
+}
+
+/* Reader thread — outside E2 mainloop.
+ * Same pattern as servicemp3 gstBusSyncHandler + m_pump. */
+void eServiceEp3::readerThread()
 {
     char buf[4096];
-    ssize_t n = read(fd, buf, sizeof(buf)-1);
-    if (n <= 0) {
-        if (n == 0 || (errno != EAGAIN && errno != EINTR)) {
-            /* Real EOF or error (not just "no data yet") —
-             * exteplayer3 has exited. Deregister notifier FIRST
-             * so the mainloop stops polling this fd (fixes GUI hang
-             * on old kernels that signal POLLHUP without POLLIN). */
-            eDebug("[serviceexteplayer3] stderr EOF/error (errno=%d) — player exited", errno);
-            m_sn_read = NULL;
-            if (m_state == stRunning || m_state == stPaused) {
-                m_state = stStopped;
-                m_event((iPlayableService*)this, iPlayableService::evStopped);
-                m_event((iPlayableService*)this, iPlayableService::evEOF);
-            }
+    std::string partial;
+    while (m_reader_running) {
+        ssize_t n = ::read(m_stderr_fd, buf, sizeof(buf) - 1);
+        if (n <= 0) break;
+        buf[n] = '\0';
+        partial += buf;
+        size_t pos;
+        while ((pos = partial.find('\n')) != std::string::npos) {
+            std::string line = partial.substr(0, pos);
+            partial.erase(0, pos + 1);
+            if (!line.empty())
+                m_pump.send(Ep3Message(line));
         }
+    }
+    m_pump.send(Ep3Message()); /* EOF */
+}
+
+/* Called in E2 mainloop by the pump */
+void eServiceEp3::handleMessage(const Ep3Message &msg)
+{
+    if (msg.type == Ep3Message::tEOF) {
+        if (m_state == stRunning)
+            m_event((iPlayableService*)this, iPlayableService::evEOF);
         return;
     }
-    buf[n] = '\0';
-    m_read_buf += buf;
-
-    size_t pos;
-    while ((pos = m_read_buf.find('\n')) != std::string::npos) {
-        std::string line = m_read_buf.substr(0, pos);
-        m_read_buf.erase(0, pos + 1);
-        if (!line.empty())
-            processLine(line);
-    }
+    processLine(msg.line);
 }
 
 void eServiceEp3::processLine(const std::string &line)

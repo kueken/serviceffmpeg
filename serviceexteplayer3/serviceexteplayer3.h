@@ -1,6 +1,7 @@
 #ifndef __serviceexteplayer3_h
 #define __serviceexteplayer3_h
 
+#include <lib/base/message.h>
 #include <lib/base/ebase.h>
 #include <lib/base/eerror.h>
 #include <lib/base/object.h>
@@ -8,13 +9,14 @@
 #include <lib/dvb/epgcache.h>
 #include <lib/dvb/pmt.h>
 #include <lib/dvb/subtitle.h>
+#include <lib/dvb/teletext.h>
 #include <lib/service/iservice.h>
 #include <lib/gui/esubtitle.h>
 
 #include <string>
 #include <vector>
+#include <pthread.h>
 
-/* Track info structures */
 struct sEp3AudioTrack {
     int         id;
     std::string encoding;
@@ -33,12 +35,17 @@ struct sEp3VideoInfo {
     int height       = 0;
     int framerate    = 0;
     int progressive  = 0;
-    int aspect_num   = 0;
-    int aspect_den   = 0;
     int aspect_ratio = 0;
 };
 
-/* eStaticServiceEp3Info */
+/* Message passed from reader thread to mainloop via eFixedMessagePump */
+struct Ep3Message {
+    enum Type { tLine, tEOF } type;
+    std::string line;
+    Ep3Message() : type(tEOF) {}
+    Ep3Message(const std::string &l) : type(tLine), line(l) {}
+};
+
 class eStaticServiceEp3Info : public iStaticServiceInformation
 {
     DECLARE_REF(eStaticServiceEp3Info);
@@ -47,11 +54,11 @@ public:
     RESULT getName(const eServiceReference &ref, std::string &name);
     int    getLength(const eServiceReference &ref);
     int    getInfo(const eServiceReference &ref, int w);
+    int    isPlayable(const eServiceReference &ref, const eServiceReference &ignore, bool simulate) { return 1; }
     long long getFileSize(const eServiceReference &ref);
     RESULT getEvent(const eServiceReference &ref, ePtr<eServiceEvent> &evt, time_t start_time);
 };
 
-/* eServiceEp3InfoContainer */
 class eServiceEp3InfoContainer : public iServiceInfoContainer
 {
     DECLARE_REF(eServiceEp3InfoContainer);
@@ -66,7 +73,6 @@ public:
     void           setDouble(double v);
 };
 
-/* eServiceFactoryEp3 */
 class eServiceFactoryEp3 : public iServiceHandler
 {
     DECLARE_REF(eServiceFactoryEp3);
@@ -82,18 +88,20 @@ public:
     RESULT offlineOperations(const eServiceReference &, ePtr<iServiceOfflineOperations> &);
 };
 
-/* eServiceEp3 — main service class */
+/* eServiceEp3 — modelled after eServiceMP3 / eServiceHisilicon.
+ * Uses eFixedMessagePump to pass exteplayer3 stderr lines from a
+ * reader thread into the E2 mainloop — same pattern as servicemp3
+ * uses for GStreamer bus messages. This keeps the mainloop idle. */
 class eServiceEp3
     : public iPlayableService
-    , public iServiceInformation
     , public iPauseableService
+    , public iServiceInformation
     , public iSeekableService
     , public iAudioTrackSelection
     , public iSubtitleOutput
-    , public iRecordableService
+    , public sigc::trackable
 {
     DECLARE_REF(eServiceEp3);
-
 public:
     eServiceEp3(eServiceReference ref);
     virtual ~eServiceEp3();
@@ -109,20 +117,21 @@ public:
     RESULT audioTracks(ePtr<iAudioTrackSelection> &ptr);
     RESULT subtitle(ePtr<iSubtitleOutput> &ptr);
     RESULT info(ePtr<iServiceInformation> &ptr);
-    RESULT setTarget(int target, bool noaudio = false);
-    RESULT audioChannel(ePtr<iAudioChannelSelection> &ptr);
-    RESULT timeshift(ePtr<iTimeshiftService> &ptr);
-    RESULT tap(ePtr<iTapService> &ptr);
-    RESULT cueSheet(ePtr<iCueSheet> &ptr);
-    RESULT audioDelay(ePtr<iAudioDelay> &ptr);
-    RESULT rdsDecoder(ePtr<iRdsDecoder> &ptr);
-    RESULT stream(ePtr<iStreamableService> &ptr);
-    RESULT streamed(ePtr<iStreamedService> &ptr);
-    RESULT keys(ePtr<iServiceKeys> &ptr);
-    void   setQpipMode(bool value, bool audio);
+    RESULT setTarget(int target, bool noaudio = false) { return -1; }
+    RESULT audioChannel(ePtr<iAudioChannelSelection> &ptr) { ptr = 0; return -1; }
+    RESULT timeshift(ePtr<iTimeshiftService> &ptr)         { ptr = 0; return -1; }
+    RESULT tap(ePtr<iTapService> &ptr)                     { ptr = nullptr; return -1; }
+    RESULT cueSheet(ePtr<iCueSheet> &ptr)                  { ptr = 0; return -1; }
+    RESULT audioDelay(ePtr<iAudioDelay> &ptr)              { ptr = 0; return -1; }
+    RESULT rdsDecoder(ePtr<iRdsDecoder> &ptr)              { ptr = 0; return -1; }
+    RESULT stream(ePtr<iStreamableService> &ptr)           { ptr = 0; return -1; }
+    RESULT streamed(ePtr<iStreamedService> &ptr)           { ptr = 0; return -1; }
+    RESULT keys(ePtr<iServiceKeys> &ptr)                   { ptr = 0; return -1; }
+    void   setQpipMode(bool value, bool audio)             { }
 
     /* iServiceInformation */
     RESULT getName(std::string &name);
+    RESULT getEvent(ePtr<eServiceEvent> &evt, int nownext);
     int    getInfo(int w);
     std::string getInfoString(int w);
     ePtr<iServiceInfoContainer> getInfoObject(int w);
@@ -132,10 +141,10 @@ public:
     RESULT unpause();
 
     /* iSeekableService */
-    RESULT getLength(pts_t &len);
+    RESULT getLength(pts_t &SWIG_OUTPUT);
     RESULT seekTo(pts_t to);
     RESULT seekRelative(int direction, pts_t to);
-    RESULT getPlayPosition(pts_t &pos);
+    RESULT getPlayPosition(pts_t &SWIG_OUTPUT);
     RESULT setTrickmode(int trick);
     RESULT isCurrentlySeekable();
 
@@ -151,20 +160,11 @@ public:
     RESULT getCachedSubtitle(SubtitleTrack &track);
     RESULT getSubtitleList(std::vector<SubtitleTrack> &subtitle_list);
 
-    /* iRecordableService stubs */
-    RESULT connectEvent(const sigc::slot<void(iRecordableService*,int)> &event, ePtr<eConnection> &connection);
-    RESULT getError(int &error);
-    RESULT subServices(ePtr<iSubserviceList> &ptr);
-    RESULT prepare(const char *filename, time_t begTime=-1, time_t endTime=-1,
-                   int eit_event_id=-1, const char *name=0, const char *descr=0,
-                   const char *tags=0, bool descramble=true, bool recordecm=false,
-                   int packetsize=188);
-    RESULT prepareStreaming(bool descramble=true, bool includeecm=false);
-    RESULT start(bool simulate=false);
-    RESULT record(ePtr<iStreamableService> &ptr);
-    RESULT getFilenameExtension(std::string &ext);
-    RESULT frontendInfo(ePtr<iFrontendInformation> &ptr);
-    RESULT stopRecord();
+protected:
+    ePtr<eTimer>        m_nownext_timer;
+    ePtr<eServiceEvent> m_event_now;
+    ePtr<eServiceEvent> m_event_next;
+    void                updateEpgCacheNowNext();
 
 private:
     enum eState { stIdle, stRunning, stPaused, stStopped, stError };
@@ -192,22 +192,33 @@ private:
     pid_t  m_player_pid;
     int    m_stdin_fd;
     int    m_stderr_fd;
-    ePtr<eSocketNotifier> m_sn_read;
-    std::string           m_read_buf;
 
-    ePtr<eTimer>        m_nownext_timer;
-    ePtr<eServiceEvent> m_event_now;
-    ePtr<eServiceEvent> m_event_next;
+    /* Message pump — replaces eSocketNotifier.
+     * Reader thread writes Ep3Message objects into the pump.
+     * The pump delivers them to handleMessage() in the E2 mainloop.
+     * This is identical to how servicemp3 handles GStreamer bus messages. */
+    eFixedMessagePump<Ep3Message> m_pump;
+    ePtr<eConnection>             m_pump_conn;
+    pthread_t                     m_reader_thread;
+    bool                          m_reader_running;
 
-    sigc::signal<void(iPlayableService*,int)>   m_event;
-    sigc::signal<void(iRecordableService*,int)> m_rec_event;
+    std::string m_read_buf; /* partial line buffer used by reader thread */
+
+    sigc::signal<void(iPlayableService*,int)> m_event;
 
     bool        launchPlayer();
     void        stopPlayer();
     void        sendCmd(const char *cmd);
     std::string buildUri() const;
-    void        onStderrData(int fd);
+
+    /* Called in mainloop by the pump */
+    void        handleMessage(const Ep3Message &msg);
     void        processLine(const std::string &line);
+
+    /* Static thread entry point */
+    static void *readerThreadEntry(void *arg);
+    void         readerThread();
+
     void        onEplayer3Extended(const std::string &line);
     void        onPlaybackOpen(const std::string &line);
     void        onPlaybackPlay(const std::string &line);
@@ -227,7 +238,6 @@ private:
     void        onFfError(const std::string &line);
     void        parseAudioList(const std::string &arr);
     void        parseSubtitleList(const std::string &arr);
-    void        updateEpgCacheNowNext();
 
     static pts_t   secToPts(int64_t sec) { return sec * 90000LL; }
     static int64_t ptsToSec(pts_t pts)   { return pts / 90000LL; }
