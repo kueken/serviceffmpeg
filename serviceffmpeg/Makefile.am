@@ -29,7 +29,12 @@ serviceffmpeg_la_LDFLAGS = \
 # ---- External player binary --------------------------------------------
 bin_PROGRAMS = ffmpeg-player
 
-ffmpeg_player_SOURCES = main.cpp
+noinst_HEADERS = bcm_ioctls.h
+
+ffmpeg_player_SOURCES = \
+    main.cpp \
+    bcm_ioctls.h        # optional — Automake erkennt Headers
+                         # automatisch über noinst_HEADERS
 
 ffmpeg_player_CXXFLAGS = \
 	$(FFMPEG_CFLAGS) \
