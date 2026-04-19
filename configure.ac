@@ -3,6 +3,7 @@ dnl Pure FFmpeg Enigma2 media service - replaces servicemp3
 dnl Target: scarthgap (OpenPLi 9.x), Python3, no GStreamer
 
 AC_INIT([serviceffmpeg],[1.0.0])
+AM_INIT_AUTOMAKE([subdir-objects no-define])
 AC_CONFIG_AUX_DIR([.])
 AM_INIT_AUTOMAKE([foreign])
 AC_CONFIG_HEADERS([config.h])
