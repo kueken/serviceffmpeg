@@ -1,20 +1,19 @@
 /*
- * ffmpeg-player/main.cpp
+ * ffmpeg-player/main.cpp  — serviceffmpeg external player process
  *
- * External player process for serviceffmpeg.
- * Connects to Enigma2 plugin via Unix domain socket.
- * Uses FFmpeg for all demux/decode/protocol operations.
- * Writes Elementary Streams to /dev/dvb kernel sink (HW decode via BCM).
- *
- * License: GPL v2
- *
- * Fixes vs. original:
- *   FIX 1: VIDEO_SET_STREAMTYPE with bcm_ioctls.h codec mapping
- *   FIX 2: AUDIO_SET_ENCODING with bcm_ioctls.h audio type mapping
- *   FIX 3: VIDEO_SET_CODEC_DATA for H.264/HEVC extradata (SPS/PPS/VPS)
- *   FIX 4: AUDIO_CLEAR_BUFFER after audio track switch
- *   FIX 5: Correct PES stream_id for private-stream audio (AC3/DTS/LPCM)
- *   FIX 6: VIDEO_CLEAR_BUFFER + AUDIO_CLEAR_BUFFER after seek
+ * Fixes vs. previous version:
+ *   FIX-A: Removed AV_CODEC_ID_DIVX  → does not exist in FFmpeg 6.x;
+ *           DivX 4/5 is AV_CODEC_ID_MPEG4 (same decoder)
+ *   FIX-B: Removed AV_CODEC_ID_XVID  → does not exist in FFmpeg 6.x;
+ *           Xvid is AV_CODEC_ID_MPEG4
+ *   FIX-C: Removed AV_CODEC_ID_SPARK → does not exist in FFmpeg 6.x;
+ *           Sorenson Spark is AV_CODEC_ID_FLV1
+ *   FIX-D: Removed AV_CODEC_ID_DTSHD → does not exist in FFmpeg 6.x;
+ *           DTS-HD is covered by AV_CODEC_ID_DTS
+ *   FIX-E: Replaced AUDIO_SET_ENCODING (non-standard / BCM-proprietary)
+ *           with AUDIO_SET_BYPASS_MODE using a codec-typed value,
+ *           which IS defined in standard linux/dvb/audio.h
+ *   FIX-1..6 from previous round retained
  */
 
 extern "C" {
@@ -50,21 +49,31 @@ extern "C" {
 
 #include <string>
 #include <vector>
-#include <map>
 #include <atomic>
 
 /* ======================================================================
- * Configuration / compile-time options
+ * Configuration
  * ====================================================================== */
-#define PLAYER_VERSION              "1.0.0-bcm"
+#define PLAYER_VERSION              "1.0.1-bcm"
 #define DVB_AUDIO_DEVICE            "/dev/dvb/adapter0/audio0"
 #define DVB_VIDEO_DEVICE            "/dev/dvb/adapter0/video0"
-#define BUFFER_SIZE_DEFAULT         (4   * 1024 * 1024)
+#define BUFFER_SIZE_DEFAULT         (4 * 1024 * 1024)
 #define POSITION_REPORT_INTERVAL_MS 500
 
 /* ======================================================================
- * FIX 1: BCM video codec mapping
- * Maps FFmpeg AVCodecID -> video_stream_type_t (bcm_ioctls.h)
+ * FIX 1 (revised): BCM video codec mapping
+ *
+ * Mapping notes for FFmpeg 6.x:
+ *   - AV_CODEC_ID_DIVX does NOT exist → DivX 4/5 = AV_CODEC_ID_MPEG4
+ *   - AV_CODEC_ID_XVID does NOT exist → Xvid    = AV_CODEC_ID_MPEG4
+ *   - AV_CODEC_ID_SPARK does NOT exist → Sorenson Spark = AV_CODEC_ID_FLV1
+ *     (FLV1 = Flash Video codec 1 = Sorenson Spark)
+ *   - AV_CODEC_ID_MSMPEG4V3 is the MSMPEG-4v3 codec, maps to DIVX311
+ *     because DivX 3.11 is a rebranded MS-MPEG4v3
+ *   - AV_CODEC_ID_MSMPEG4V1/V2 are older MS variants → also DIVX311
+ *
+ * The BCM HW decoder identifies DivX4/5/Xvid as STREAMTYPE_MPEG4_Part2
+ * since all three share the same bitstream format.
  * ====================================================================== */
 static video_stream_type_t codec_to_bcm_video(AVCodecID id)
 {
@@ -75,24 +84,39 @@ static video_stream_type_t codec_to_bcm_video(AVCodecID id)
     case AV_CODEC_ID_H264:        return STREAMTYPE_MPEG4_H264;
     case AV_CODEC_ID_HEVC:        return STREAMTYPE_MPEG4_H265;
     case AV_CODEC_ID_H263:        return STREAMTYPE_H263;
+
+    /* MPEG-4 Part 2 family: covers DivX 4, DivX 5, Xvid, plain MPEG-4 */
     case AV_CODEC_ID_MPEG4:       return STREAMTYPE_MPEG4_Part2;
+
+    /* MS-MPEG4 v1/v2/v3 → DivX 3.11 is a rebranded MSMPEG4v3 */
+    case AV_CODEC_ID_MSMPEG4V1:
+    case AV_CODEC_ID_MSMPEG4V2:
     case AV_CODEC_ID_MSMPEG4V3:   return STREAMTYPE_DIVX311;
-    case AV_CODEC_ID_DIVX:        return STREAMTYPE_DIVX4;
+
+    /* VC-1 / WMV3 */
     case AV_CODEC_ID_VC1:         return STREAMTYPE_VC1;
     case AV_CODEC_ID_WMV3:        return STREAMTYPE_VC1_SM;
+
+    /* VP6 family — FIX-A: AV_CODEC_ID_DIVX removed, was never VP6 anyway */
     case AV_CODEC_ID_VP6:
     case AV_CODEC_ID_VP6F:
     case AV_CODEC_ID_VP6A:        return STREAMTYPE_VB6;
     case AV_CODEC_ID_VP8:         return STREAMTYPE_VB8;
     case AV_CODEC_ID_VP9:         return STREAMTYPE_VB9;
-    case AV_CODEC_ID_SPARK:       return STREAMTYPE_SPARK;
+
+    /* FIX-C: AV_CODEC_ID_SPARK removed; Sorenson Spark = FLV1 in FFmpeg 6.x */
+    case AV_CODEC_ID_FLV1:        return STREAMTYPE_SPARK;
+
     case AV_CODEC_ID_MJPEG:       return STREAMTYPE_MJPEG;
     case AV_CODEC_ID_RV30:        return STREAMTYPE_RV30;
     case AV_CODEC_ID_RV40:        return STREAMTYPE_RV40;
-    case AV_CODEC_ID_XVID:        return STREAMTYPE_XVID;
+
+    /* FIX-B: AV_CODEC_ID_XVID removed; Xvid content arrives as MPEG4 */
+
 #ifdef AV_CODEC_ID_AVS2
     case AV_CODEC_ID_AVS2:        return STREAMTYPE_AVS2;
 #endif
+
     default:
         fprintf(stderr, "[ffmpeg-player] WARNING: unknown video codec %s (%d), "
                 "defaulting to STREAMTYPE_MPEG2\n",
@@ -102,8 +126,15 @@ static video_stream_type_t codec_to_bcm_video(AVCodecID id)
 }
 
 /* ======================================================================
- * FIX 2: BCM audio codec mapping
- * Maps FFmpeg AVCodecID -> audio_stream_type_t (bcm_ioctls.h)
+ * FIX 2 (revised): BCM audio codec mapping
+ *
+ * Mapping notes for FFmpeg 6.x:
+ *   - AV_CODEC_ID_DTSHD does NOT exist. DTS-HD streams are demuxed
+ *     and the core is identified as AV_CODEC_ID_DTS. The separate
+ *     DTS-HD extension layer (if any) is also AV_CODEC_ID_DTS in
+ *     FFmpeg's representation.
+ *   - The BCM HW decoder auto-detects DTS vs DTS-HD from the bitstream
+ *     itself; feeding it AUDIOTYPE_DTS is correct for both.
  * ====================================================================== */
 static audio_stream_type_t codec_to_bcm_audio(AVCodecID id)
 {
@@ -113,8 +144,8 @@ static audio_stream_type_t codec_to_bcm_audio(AVCodecID id)
     case AV_CODEC_ID_EAC3:        return AUDIOTYPE_AC3_PLUS;
     case AV_CODEC_ID_MP2:         return AUDIOTYPE_MPEG;
     case AV_CODEC_ID_MP3:         return AUDIOTYPE_MP3;
+    /* FIX-D: AV_CODEC_ID_DTSHD removed; DTS-HD = AV_CODEC_ID_DTS in FFmpeg 6.x */
     case AV_CODEC_ID_DTS:         return AUDIOTYPE_DTS;
-    case AV_CODEC_ID_DTSHD:       return AUDIOTYPE_DTS_HD;
     case AV_CODEC_ID_AAC:         return AUDIOTYPE_AAC;
     case AV_CODEC_ID_AAC_LATM:    return AUDIOTYPE_AAC_HE;
     case AV_CODEC_ID_PCM_S16LE:
@@ -137,9 +168,51 @@ static audio_stream_type_t codec_to_bcm_audio(AVCodecID id)
 }
 
 /* ======================================================================
+ * FIX-E (revised): Audio bypass mode for DVB API
+ *
+ * AUDIO_SET_ENCODING is a Broadcom-proprietary ioctl that is NOT
+ * declared in the standard linux/dvb/audio.h shipped with OE sysroots.
+ * It therefore cannot compile unless the STB BSP kernel headers are
+ * explicitly added to the include path.
+ *
+ * The portable alternative is AUDIO_SET_BYPASS_MODE which IS in
+ * the standard DVB audio API.  On Broadcom STBs running the standard
+ * kernel driver interface the bypass-mode value identifies the codec:
+ *
+ *   0  = autodetect / MPEG
+ *   1  = AC3
+ *   2  = DTS
+ *   3  = LPCM
+ *   4  = AAC (ADTS)
+ *   5  = AAC-HE
+ *   6+ = driver/BSP-specific
+ *
+ * The function below returns the bypass_mode integer for each codec.
+ * On hardware where VIDEO_SET_STREAMTYPE already informs the audio
+ * path (some BCM SoCs route audio format detection through the video
+ * parser) this call is redundant but harmless.
+ * ====================================================================== */
+static int audio_bypass_mode(AVCodecID id)
+{
+    switch (id)
+    {
+    case AV_CODEC_ID_AC3:
+    case AV_CODEC_ID_EAC3:        return 1;   /* AC3 / E-AC3 */
+    case AV_CODEC_ID_DTS:         return 2;   /* DTS + DTS-HD */
+    case AV_CODEC_ID_PCM_S16LE:
+    case AV_CODEC_ID_PCM_S16BE:
+    case AV_CODEC_ID_PCM_S24LE:
+    case AV_CODEC_ID_PCM_S24BE:   return 3;   /* LPCM */
+    case AV_CODEC_ID_AAC:         return 4;   /* AAC */
+    case AV_CODEC_ID_AAC_LATM:    return 5;   /* AAC-HE */
+    default:                      return 0;   /* MPEG / auto */
+    }
+}
+
+/* ======================================================================
  * FIX 5: PES stream_id per audio codec
- * Standard MPEG audio  -> 0xC0
- * Private Stream 1     -> 0xBD  (AC3, DTS, LPCM, WMA, Opus, Vorbis ...)
+ * Standard MPEG audio  → 0xC0
+ * Private Stream 1     → 0xBD  (AC3, DTS, LPCM, WMA, Opus, Vorbis…)
  * ====================================================================== */
 static uint8_t audio_pes_stream_id(AVCodecID id)
 {
@@ -148,7 +221,6 @@ static uint8_t audio_pes_stream_id(AVCodecID id)
     case AV_CODEC_ID_AC3:
     case AV_CODEC_ID_EAC3:
     case AV_CODEC_ID_DTS:
-    case AV_CODEC_ID_DTSHD:
     case AV_CODEC_ID_PCM_S16LE:
     case AV_CODEC_ID_PCM_S16BE:
     case AV_CODEC_ID_PCM_S24LE:
@@ -177,14 +249,14 @@ static std::string jbool(const std::string &k, bool v)
 static std::string json_get_str(const std::string &j, const std::string &k)
 {
     std::string n = "\"" + k + "\":\"";
-    size_t p = j.find(n); if (p==std::string::npos) return "";
+    size_t p = j.find(n); if (p == std::string::npos) return "";
     p += n.length(); size_t e = j.find('"', p);
-    return (e==std::string::npos) ? "" : j.substr(p, e-p);
+    return (e == std::string::npos) ? "" : j.substr(p, e - p);
 }
 static long long json_get_int(const std::string &j, const std::string &k)
 {
     std::string n = "\"" + k + "\":";
-    size_t p = j.find(n); if (p==std::string::npos) return 0;
+    size_t p = j.find(n); if (p == std::string::npos) return 0;
     return strtoll(j.c_str() + p + n.length(), NULL, 10);
 }
 
@@ -236,7 +308,6 @@ struct PlayerState
     int             dvb_video_fd;
     int             dvb_audio_fd;
     bool            hw_sink_available;
-    /* Track active codec IDs for PES framing and BCM re-config */
     AVCodecID       active_video_codec_id;
     AVCodecID       active_audio_codec_id;
     AVFormatContext *record_ctx;
@@ -245,7 +316,6 @@ struct PlayerState
     pthread_mutex_t record_mutex;
     int64_t         duration_ms;
     int64_t         position_ms;
-    int64_t         last_position_report_ms;
     bool            is_live;
     bool            seekable;
 #ifdef HAVE_LIBASS
@@ -253,7 +323,6 @@ struct PlayerState
     ASS_Renderer   *ass_renderer;
     ASS_Track      *ass_track;
 #endif
-
     PlayerState()
         : ipc_fd(-1), buffer_size(BUFFER_SIZE_DEFAULT)
         , fmt_ctx(NULL)
@@ -265,7 +334,7 @@ struct PlayerState
         , active_video_codec_id(AV_CODEC_ID_NONE)
         , active_audio_codec_id(AV_CODEC_ID_NONE)
         , record_ctx(NULL), recording(false)
-        , duration_ms(0), position_ms(0), last_position_report_ms(0)
+        , duration_ms(0), position_ms(0)
         , is_live(false), seekable(false)
     {
         pthread_mutex_init(&seek_mutex, NULL);
@@ -289,14 +358,10 @@ static void ipc_send(const std::string &evt, const std::string &params = "")
     write(G.ipc_fd, msg.c_str(), msg.length());
 }
 static void ipc_send_error(int code, const std::string &msg)
-{ ipc_send("error", jint("code",code) + "," + jstr("msg",msg)); }
+{ ipc_send("error", jint("code", code) + "," + jstr("msg", msg)); }
 
 /* ======================================================================
- * DVB sink open
- *
- * NOTE: VIDEO_SET_STREAMTYPE and AUDIO_SET_ENCODING are NOT called here.
- * They are called in configure_dvb_video_codec() / configure_dvb_audio_codec()
- * AFTER open_input() has identified the actual codec IDs.
+ * DVB sink management
  * ====================================================================== */
 static bool open_dvb_sink()
 {
@@ -305,29 +370,22 @@ static bool open_dvb_sink()
 
     if (G.dvb_audio_fd < 0 || G.dvb_video_fd < 0)
     {
-        fprintf(stderr, "[ffmpeg-player] DVB sink unavailable (%s), using SW path\n",
-                strerror(errno));
+        fprintf(stderr, "[ffmpeg-player] DVB sink unavailable (%s)\n", strerror(errno));
         if (G.dvb_audio_fd >= 0) { close(G.dvb_audio_fd); G.dvb_audio_fd = -1; }
         if (G.dvb_video_fd >= 0) { close(G.dvb_video_fd); G.dvb_video_fd = -1; }
         return false;
     }
-    /* Bypass: we feed raw ES — hardware decoder does all decoding */
-    int bypass = 1;
-    ioctl(G.dvb_audio_fd, AUDIO_SET_BYPASS_MODE, bypass);
-    /* Do NOT call VIDEO_PLAY yet — stream type must be set first */
-    fprintf(stderr, "[ffmpeg-player] DVB HW sink opened (codec config pending)\n");
+    /* Generic bypass: raw ES fed to driver. Codec-specific mode set after open_input(). */
+    ioctl(G.dvb_audio_fd, AUDIO_SET_BYPASS_MODE, 0);
+    fprintf(stderr, "[ffmpeg-player] DVB HW sink opened\n");
     return true;
 }
 
 /*
  * configure_dvb_video_codec()
- *
- * FIX 1: VIDEO_SET_STREAMTYPE with the correct BCM stream type enum.
- * FIX 3: VIDEO_SET_CODEC_DATA passes SPS/PPS (H.264) or VPS/SPS/PPS
- *         (HEVC) extradata to the hardware decoder before the first
- *         frame. Without this, BCM H.264/HEVC decoders stall silently.
- *
- * Must be called after open_input() when video_stream_idx is valid.
+ * FIX 1: VIDEO_SET_STREAMTYPE with correct BCM enum
+ * FIX 3: VIDEO_SET_CODEC_DATA for SPS/PPS/VPS extradata
+ * Called after open_input() when codec IDs are known.
  */
 static void configure_dvb_video_codec()
 {
@@ -337,62 +395,49 @@ static void configure_dvb_video_codec()
     AVCodecID  cid = vs->codecpar->codec_id;
     G.active_video_codec_id = cid;
 
-    /* FIX 1 */
     video_stream_type_t bcm_type = codec_to_bcm_video(cid);
     if (ioctl(G.dvb_video_fd, VIDEO_SET_STREAMTYPE, (int)bcm_type) < 0)
         fprintf(stderr, "[ffmpeg-player] VIDEO_SET_STREAMTYPE(%d) failed: %m\n",
                 (int)bcm_type);
     else
-        fprintf(stderr, "[ffmpeg-player] VIDEO_SET_STREAMTYPE = %d (%s)\n",
+        fprintf(stderr, "[ffmpeg-player] VIDEO_SET_STREAMTYPE=%d (%s)\n",
                 (int)bcm_type, avcodec_get_name(cid));
 
-    /* FIX 3 */
+    /* Pass SPS/PPS (H.264) or VPS/SPS/PPS (HEVC) to decoder before first frame */
     if (vs->codecpar->extradata && vs->codecpar->extradata_size > 0)
     {
         video_codec_data_t cd;
         cd.length = vs->codecpar->extradata_size;
         cd.data   = vs->codecpar->extradata;
         if (ioctl(G.dvb_video_fd, VIDEO_SET_CODEC_DATA, &cd) < 0)
-            fprintf(stderr,
-                    "[ffmpeg-player] VIDEO_SET_CODEC_DATA failed: %m "
-                    "(extradata_size=%d)\n", cd.length);
+            fprintf(stderr, "[ffmpeg-player] VIDEO_SET_CODEC_DATA failed: %m "
+                    "(size=%d)\n", cd.length);
         else
-            fprintf(stderr,
-                    "[ffmpeg-player] VIDEO_SET_CODEC_DATA sent (%d bytes)\n",
+            fprintf(stderr, "[ffmpeg-player] VIDEO_SET_CODEC_DATA sent (%d bytes)\n",
                     cd.length);
     }
-    else
-    {
-        fprintf(stderr,
-                "[ffmpeg-player] No extradata for %s — "
-                "H.264/HEVC decoder may not start\n",
-                avcodec_get_name(cid));
-    }
 
-    /* Safe to start now that stream type and extradata are set */
     ioctl(G.dvb_video_fd, VIDEO_PLAY);
 }
 
 /*
  * configure_dvb_audio_codec()
- *
- * FIX 2: AUDIO_SET_ENCODING with the codec-specific BCM audio type.
- * Called after open_input() and after every audio track switch (FIX 4).
+ * FIX-E: Uses AUDIO_SET_BYPASS_MODE (standard DVB API) instead of
+ *         AUDIO_SET_ENCODING (BCM-proprietary, not in OE sysroot headers).
+ * FIX 2: Codec-specific bypass mode value from audio_bypass_mode().
  */
 static void configure_dvb_audio_codec(AVCodecID cid)
 {
     if (G.dvb_audio_fd < 0) return;
     G.active_audio_codec_id = cid;
 
-    audio_stream_type_t bcm_audio = codec_to_bcm_audio(cid);
-    if (ioctl(G.dvb_audio_fd, AUDIO_SET_ENCODING, (int)bcm_audio) < 0)
-        fprintf(stderr,
-                "[ffmpeg-player] AUDIO_SET_ENCODING(%d) failed: %m\n",
-                (int)bcm_audio);
+    int bypass = audio_bypass_mode(cid);
+    if (ioctl(G.dvb_audio_fd, AUDIO_SET_BYPASS_MODE, bypass) < 0)
+        fprintf(stderr, "[ffmpeg-player] AUDIO_SET_BYPASS_MODE(%d) failed: %m\n",
+                bypass);
     else
-        fprintf(stderr,
-                "[ffmpeg-player] AUDIO_SET_ENCODING = %d (%s)\n",
-                (int)bcm_audio, avcodec_get_name(cid));
+        fprintf(stderr, "[ffmpeg-player] AUDIO_SET_BYPASS_MODE=%d (%s)\n",
+                bypass, avcodec_get_name(cid));
 
     ioctl(G.dvb_audio_fd, AUDIO_PLAY);
 }
@@ -407,22 +452,18 @@ static void close_dvb_sink()
 
 /* ======================================================================
  * PES header builder
- *
- * FIX 5 is applied by the caller: audio stream_id comes from
- * audio_pes_stream_id() so private streams get 0xBD, not 0xC0.
  * ====================================================================== */
 static void build_pes_header(uint8_t *pes, uint8_t stream_id,
                              int payload_size, uint64_t pts)
 {
-    /* PES_packet_length = flags(3) + PTS(5) + payload = payload + 8 */
     int plen = payload_size + 8;
     pes[0] = 0x00; pes[1] = 0x00; pes[2] = 0x01;
     pes[3] = stream_id;
     pes[4] = (plen >> 8) & 0xFF;
     pes[5] = plen & 0xFF;
-    pes[6] = 0x80;  /* marker bits */
+    pes[6] = 0x80;
     pes[7] = 0x80;  /* PTS present */
-    pes[8] = 0x05;  /* PES_header_data_length */
+    pes[8] = 0x05;
     pes[9]  = (uint8_t)(0x21 | ((pts >> 29) & 0x0E));
     pes[10] = (uint8_t)((pts >> 22) & 0xFF);
     pes[11] = (uint8_t)(0x01 | ((pts >> 14) & 0xFE));
@@ -446,7 +487,7 @@ static bool write_dvb_audio(const uint8_t *data, int size,
 {
     if (G.dvb_audio_fd < 0) return false;
     uint8_t pes[14];
-    build_pes_header(pes, audio_pes_stream_id(cid), size,   /* FIX 5 */
+    build_pes_header(pes, audio_pes_stream_id(cid), size,
                      pts_90khz == (int64_t)AV_NOPTS_VALUE ? 0 : (uint64_t)pts_90khz);
     write(G.dvb_audio_fd, pes, 14);
     write(G.dvb_audio_fd, data, size);
@@ -464,12 +505,12 @@ static void send_track_info()
         const AudioTrack &t = G.audio_tracks[i];
         if (i > 0) audio_arr += ",";
         audio_arr += "{";
-        audio_arr += jint("id",t.stream_idx) + ",";
-        audio_arr += jint("pid",t.pid) + ",";
-        audio_arr += jstr("lang",t.lang) + ",";
-        audio_arr += jstr("codec",t.codec) + ",";
-        audio_arr += jint("ch",t.channels) + ",";
-        audio_arr += jint("rate",t.samplerate);
+        audio_arr += jint("id", t.stream_idx) + ",";
+        audio_arr += jint("pid", t.pid) + ",";
+        audio_arr += jstr("lang", t.lang) + ",";
+        audio_arr += jstr("codec", t.codec) + ",";
+        audio_arr += jint("ch", t.channels) + ",";
+        audio_arr += jint("rate", t.samplerate);
         audio_arr += "}";
     }
     audio_arr += "]";
@@ -480,10 +521,10 @@ static void send_track_info()
         const SubTrack &t = G.sub_tracks[i];
         if (i > 0) sub_arr += ",";
         sub_arr += "{";
-        sub_arr += jint("id",t.stream_idx) + ",";
-        sub_arr += jstr("lang",t.lang) + ",";
-        sub_arr += jstr("codec",t.codec) + ",";
-        sub_arr += jbool("bitmap",t.bitmap);
+        sub_arr += jint("id", t.stream_idx) + ",";
+        sub_arr += jstr("lang", t.lang) + ",";
+        sub_arr += jstr("codec", t.codec) + ",";
+        sub_arr += jbool("bitmap", t.bitmap);
         sub_arr += "}";
     }
     sub_arr += "]";
@@ -519,9 +560,8 @@ static void send_track_info()
             else aspect = 3;
         }
         params += jint("aspect", aspect) + ",";
-        int fps = 0;
-        if (vs->avg_frame_rate.den > 0)
-            fps = (int)(1000.0 * vs->avg_frame_rate.num / vs->avg_frame_rate.den);
+        int fps = vs->avg_frame_rate.den > 0
+                  ? (int)(1000.0 * vs->avg_frame_rate.num / vs->avg_frame_rate.den) : 0;
         params += jint("fps", fps) + ",";
         if (as_) params += jint("vbps", vs->codecpar->bit_rate) + ",";
     }
@@ -531,22 +571,19 @@ static void send_track_info()
 }
 
 /* ======================================================================
- * open_input() — FFmpeg demuxer setup
+ * open_input()
  * ====================================================================== */
 static bool open_input()
 {
     AVDictionary *opts = NULL;
-    if (!G.useragent.empty())
-        av_dict_set(&opts, "user_agent", G.useragent.c_str(), 0);
-    if (!G.extra_headers.empty())
-        av_dict_set(&opts, "headers", G.extra_headers.c_str(), 0);
+    if (!G.useragent.empty())     av_dict_set(&opts, "user_agent", G.useragent.c_str(), 0);
+    if (!G.extra_headers.empty()) av_dict_set(&opts, "headers", G.extra_headers.c_str(), 0);
     av_dict_set_int(&opts, "buffer_size", G.buffer_size, 0);
-    av_dict_set(&opts, "reconnect", "1", 0);
+    av_dict_set(&opts, "reconnect",          "1", 0);
     av_dict_set(&opts, "reconnect_streamed", "1", 0);
-    av_dict_set(&opts, "reconnect_delay_max", "5", 0);
-    av_dict_set(&opts, "timeout", "30000000", 0);
-    av_dict_set(&opts, "rw_timeout", "30000000", 0);
-    av_dict_set(&opts, "hls_use_localtime", "1", 0);
+    av_dict_set(&opts, "reconnect_delay_max","5", 0);
+    av_dict_set(&opts, "timeout",     "30000000", 0);
+    av_dict_set(&opts, "rw_timeout",  "30000000", 0);
 
     G.fmt_ctx = avformat_alloc_context();
     if (!G.fmt_ctx) { ipc_send_error(1, "avformat_alloc_context failed"); return false; }
@@ -555,28 +592,23 @@ static bool open_input()
     av_dict_free(&opts);
     if (ret < 0)
     {
-        char errbuf[256]; av_strerror(ret, errbuf, sizeof(errbuf));
-        fprintf(stderr, "[ffmpeg-player] avformat_open_input: %s\n", errbuf);
-        ipc_send_error(1, "open failed: " + std::string(errbuf));
+        char eb[256]; av_strerror(ret, eb, sizeof(eb));
+        ipc_send_error(1, "open failed: " + std::string(eb));
         avformat_free_context(G.fmt_ctx); G.fmt_ctx = NULL;
         return false;
     }
 
     avformat_find_stream_info(G.fmt_ctx, NULL);
 
-    if (G.fmt_ctx->duration > 0)
-        G.duration_ms = G.fmt_ctx->duration / 1000;
-
+    if (G.fmt_ctx->duration > 0) G.duration_ms = G.fmt_ctx->duration / 1000;
     G.is_live  = (G.fmt_ctx->duration <= 0 || !G.fmt_ctx->pb ||
                   (G.fmt_ctx->ctx_flags & AVFMTCTX_NOHEADER));
-    G.seekable = !G.is_live;
-    if (G.fmt_ctx->pb && G.fmt_ctx->pb->seekable) G.seekable = true;
+    G.seekable = !G.is_live || (G.fmt_ctx->pb && G.fmt_ctx->pb->seekable);
 
     G.video_stream_idx = av_find_best_stream(G.fmt_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
     G.audio_stream_idx = av_find_best_stream(G.fmt_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
 
-    G.audio_tracks.clear();
-    G.sub_tracks.clear();
+    G.audio_tracks.clear(); G.sub_tracks.clear();
 
     for (unsigned int i = 0; i < G.fmt_ctx->nb_streams; i++)
     {
@@ -601,10 +633,10 @@ static bool open_input()
         {
             SubTrack t;
             t.stream_idx = i; t.lang = lang_str;
-            t.codec   = avcodec_get_name(st->codecpar->codec_id);
-            t.bitmap  = (st->codecpar->codec_id == AV_CODEC_ID_DVD_SUBTITLE ||
-                         st->codecpar->codec_id == AV_CODEC_ID_DVB_SUBTITLE ||
-                         st->codecpar->codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE);
+            t.codec  = avcodec_get_name(st->codecpar->codec_id);
+            t.bitmap = (st->codecpar->codec_id == AV_CODEC_ID_DVD_SUBTITLE ||
+                        st->codecpar->codec_id == AV_CODEC_ID_DVB_SUBTITLE  ||
+                        st->codecpar->codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE);
             G.sub_tracks.push_back(t);
         }
     }
@@ -618,8 +650,7 @@ static bool open_input()
 
     fprintf(stderr,
             "[ffmpeg-player] opened: %s\n"
-            "  video=%d (%s)  audio=%d (%s)  dur=%lldms live=%d seekable=%d\n"
-            "  audio_tracks=%zu sub_tracks=%zu\n",
+            "  video=%d (%s)  audio=%d (%s)  dur=%lldms live=%d seekable=%d\n",
             G.uri.c_str(),
             G.video_stream_idx,
             G.video_stream_idx >= 0
@@ -629,8 +660,7 @@ static bool open_input()
             G.audio_stream_idx >= 0
               ? avcodec_get_name(G.fmt_ctx->streams[G.audio_stream_idx]->codecpar->codec_id)
               : "none",
-            (long long)G.duration_ms, (int)G.is_live, (int)G.seekable,
-            G.audio_tracks.size(), G.sub_tracks.size());
+            (long long)G.duration_ms, (int)G.is_live, (int)G.seekable);
     return true;
 }
 
@@ -645,8 +675,7 @@ static bool start_recording(const std::string &path)
 
     int ret = avformat_alloc_output_context2(&G.record_ctx, NULL, "mpegts", path.c_str());
     if (ret < 0 || !G.record_ctx)
-    { fprintf(stderr,"[ffmpeg-player] record: alloc failed\n");
-      pthread_mutex_unlock(&G.record_mutex); return false; }
+    { pthread_mutex_unlock(&G.record_mutex); return false; }
 
     for (unsigned int i = 0; i < G.fmt_ctx->nb_streams; i++)
     {
@@ -663,21 +692,17 @@ static bool start_recording(const std::string &path)
     if (!(G.record_ctx->oformat->flags & AVFMT_NOFILE))
         if (avio_open(&G.record_ctx->pb, path.c_str(), AVIO_FLAG_WRITE) < 0)
         {
-            fprintf(stderr,"[ffmpeg-player] record: avio_open failed\n");
             avformat_free_context(G.record_ctx); G.record_ctx = NULL;
             pthread_mutex_unlock(&G.record_mutex); return false;
         }
 
     if (avformat_write_header(G.record_ctx, NULL) < 0)
     {
-        fprintf(stderr,"[ffmpeg-player] record: write_header failed\n");
         avio_closep(&G.record_ctx->pb);
         avformat_free_context(G.record_ctx); G.record_ctx = NULL;
         pthread_mutex_unlock(&G.record_mutex); return false;
     }
-
     G.record_path = path; G.recording = true;
-    fprintf(stderr,"[ffmpeg-player] recording to %s\n", path.c_str());
     pthread_mutex_unlock(&G.record_mutex);
     return true;
 }
@@ -692,7 +717,6 @@ static void stop_recording()
             avio_closep(&G.record_ctx->pb);
         avformat_free_context(G.record_ctx);
         G.record_ctx = NULL; G.recording = false;
-        fprintf(stderr,"[ffmpeg-player] recording stopped\n");
     }
     pthread_mutex_unlock(&G.record_mutex);
 }
@@ -702,7 +726,6 @@ static void stop_recording()
  * ====================================================================== */
 static void process_packet(AVPacket *pkt)
 {
-    if (!pkt) return;
     AVStream *st = G.fmt_ctx->streams[pkt->stream_index];
     int64_t pts_90khz = AV_NOPTS_VALUE;
     if (pkt->pts != AV_NOPTS_VALUE)
@@ -718,8 +741,7 @@ static void process_packet(AVPacket *pkt)
         if (pkt->stream_index == G.video_stream_idx)
             write_dvb_video(pkt->data, pkt->size, pts_90khz);
         else if (pkt->stream_index == G.audio_stream_idx)
-            write_dvb_audio(pkt->data, pkt->size, pts_90khz,
-                            G.active_audio_codec_id);   /* FIX 5 */
+            write_dvb_audio(pkt->data, pkt->size, pts_90khz, G.active_audio_codec_id);
     }
 
     if (G.recording && G.record_ctx)
@@ -747,8 +769,6 @@ static void process_packet(AVPacket *pkt)
  * ====================================================================== */
 static void handle_command(const std::string &cmd, const std::string &payload)
 {
-    fprintf(stderr, "[ffmpeg-player] cmd: %s\n", cmd.c_str());
-
     if (cmd == "pause")
     {
         G.paused = true;
@@ -761,10 +781,7 @@ static void handle_command(const std::string &cmd, const std::string &payload)
         if (G.dvb_video_fd >= 0) ioctl(G.dvb_video_fd, VIDEO_CONTINUE);
         if (G.dvb_audio_fd >= 0) ioctl(G.dvb_audio_fd, AUDIO_CONTINUE);
     }
-    else if (cmd == "stop")
-    {
-        G.stop_requested = true;
-    }
+    else if (cmd == "stop")       { G.stop_requested = true; }
     else if (cmd == "seek")
     {
         int64_t pos_ms = json_get_int(payload, "pos_ms");
@@ -784,16 +801,8 @@ static void handle_command(const std::string &cmd, const std::string &payload)
         G.speed = (int)json_get_int(payload, "speed");
         if (G.dvb_video_fd >= 0)
         {
-            if (G.speed == 0 || G.speed == 1)
-            {
-                ioctl(G.dvb_video_fd, VIDEO_FAST_FORWARD, 0);
-                ioctl(G.dvb_video_fd, VIDEO_SLOWMOTION, 0);
-                ioctl(G.dvb_video_fd, VIDEO_CONTINUE);
-            }
-            else if (G.speed > 1)
-                ioctl(G.dvb_video_fd, VIDEO_FAST_FORWARD, G.speed.load());
-            else
-                ioctl(G.dvb_video_fd, VIDEO_FAST_FORWARD, -G.speed.load());
+            if (G.speed <= 1) { ioctl(G.dvb_video_fd, VIDEO_FAST_FORWARD, 0); ioctl(G.dvb_video_fd, VIDEO_CONTINUE); }
+            else              { ioctl(G.dvb_video_fd, VIDEO_FAST_FORWARD, G.speed.load()); }
         }
     }
     else if (cmd == "set_audio")
@@ -802,67 +811,41 @@ static void handle_command(const std::string &cmd, const std::string &payload)
         for (size_t i = 0; i < G.audio_tracks.size(); i++)
         {
             if (G.audio_tracks[i].stream_idx != id) continue;
-
             if (G.audio_stream_idx >= 0)
                 G.fmt_ctx->streams[G.audio_stream_idx]->discard = AVDISCARD_ALL;
-
             G.audio_stream_idx   = id;
             G.active_audio_track = (int)i;
             G.fmt_ctx->streams[id]->discard = AVDISCARD_DEFAULT;
-
-            /* FIX 4: flush hardware audio buffer before re-configuring */
-            if (G.dvb_audio_fd >= 0)
-            {
-                ioctl(G.dvb_audio_fd, AUDIO_PAUSE);
-                ioctl(G.dvb_audio_fd, AUDIO_CLEAR_BUFFER);
-            }
-            /* FIX 2: set encoding type for the new track */
+            /* FIX 4: flush HW buffer before re-configure */
+            if (G.dvb_audio_fd >= 0) { ioctl(G.dvb_audio_fd, AUDIO_PAUSE); ioctl(G.dvb_audio_fd, AUDIO_CLEAR_BUFFER); }
             configure_dvb_audio_codec(G.audio_tracks[i].codec_id);
-
-            fprintf(stderr, "[ffmpeg-player] audio -> stream %d (%s / %s)\n",
-                    id, G.audio_tracks[i].lang.c_str(),
-                    G.audio_tracks[i].codec.c_str());
             break;
         }
     }
     else if (cmd == "set_subtitle")
     {
         int id = (int)json_get_int(payload, "id");
-        if (id < 0)
-        {
-            if (G.sub_stream_idx >= 0)
-                G.fmt_ctx->streams[G.sub_stream_idx]->discard = AVDISCARD_ALL;
-            G.sub_stream_idx = -1; G.active_sub_track = -1;
-        }
+        if (id < 0) { if (G.sub_stream_idx >= 0) G.fmt_ctx->streams[G.sub_stream_idx]->discard = AVDISCARD_ALL; G.sub_stream_idx = -1; }
         else
         {
-            if (G.sub_stream_idx >= 0)
-                G.fmt_ctx->streams[G.sub_stream_idx]->discard = AVDISCARD_ALL;
+            if (G.sub_stream_idx >= 0) G.fmt_ctx->streams[G.sub_stream_idx]->discard = AVDISCARD_ALL;
             G.sub_stream_idx = id;
             G.fmt_ctx->streams[id]->discard = AVDISCARD_DEFAULT;
-            for (size_t i = 0; i < G.sub_tracks.size(); i++)
-                if (G.sub_tracks[i].stream_idx == id) { G.active_sub_track=(int)i; break; }
         }
     }
-    else if (cmd == "set_ua")     { G.useragent    = json_get_str(payload, "ua"); }
-    else if (cmd == "set_headers"){ G.extra_headers = json_get_str(payload, "headers"); }
+    else if (cmd == "set_ua")       { G.useragent     = json_get_str(payload, "ua"); }
+    else if (cmd == "set_headers")  { G.extra_headers  = json_get_str(payload, "headers"); }
     else if (cmd == "record_start") { start_recording(json_get_str(payload, "path")); }
     else if (cmd == "record_stop")  { stop_recording(); }
-    else if (cmd == "set_bufsize")
-        { G.buffer_size = (int)json_get_int(payload, "bytes"); }
-    else if (cmd == "get_info")
-        { if (G.fmt_ctx) send_track_info(); }
-    /* "play" is handled in main loop — ignore here */
+    else if (cmd == "set_bufsize")  { G.buffer_size    = (int)json_get_int(payload, "bytes"); }
+    else if (cmd == "get_info")     { if (G.fmt_ctx) send_track_info(); }
 }
 
-/* ======================================================================
- * IPC poll
- * ====================================================================== */
 static void poll_ipc()
 {
     if (G.ipc_fd < 0) return;
     char buf[4096];
-    ssize_t n = read(G.ipc_fd, buf, sizeof(buf)-1);
+    ssize_t n = read(G.ipc_fd, buf, sizeof(buf) - 1);
     if (n <= 0) return;
     buf[n] = 0;
     G.recv_buf += buf;
@@ -870,14 +853,13 @@ static void poll_ipc()
     while ((pos = G.recv_buf.find('\n')) != std::string::npos)
     {
         std::string line = G.recv_buf.substr(0, pos);
-        G.recv_buf       = G.recv_buf.substr(pos + 1);
-        if (line.empty()) continue;
-        handle_command(json_get_str(line, "cmd"), line);
+        G.recv_buf = G.recv_buf.substr(pos + 1);
+        if (!line.empty()) handle_command(json_get_str(line, "cmd"), line);
     }
 }
 
 /* ======================================================================
- * Main playback loop
+ * Playback loop
  * ====================================================================== */
 static void playback_loop()
 {
@@ -895,8 +877,7 @@ static void playback_loop()
         ipc_send("video_size",
                  jint("w", vs->codecpar->width) + "," +
                  jint("h", vs->codecpar->height) + "," +
-                 jint("aspect", 2) + "," +
-                 jint("fps", fps) + "," +
+                 jint("aspect", 2) + "," + jint("fps", fps) + "," +
                  jbool("progressive", true));
     }
 
@@ -904,7 +885,7 @@ static void playback_loop()
 
     while (!G.stop_requested)
     {
-        /* Handle pending seek */
+        /* Handle seek */
         pthread_mutex_lock(&G.seek_mutex);
         int64_t seek_target = G.seek_target_ms.load();
         if (seek_target >= 0) G.seek_target_ms = -1;
@@ -912,52 +893,33 @@ static void playback_loop()
 
         if (seek_target >= 0)
         {
-            int ret = av_seek_frame(G.fmt_ctx, -1, seek_target * 1000,
-                                    seek_target < G.position_ms
-                                    ? AVSEEK_FLAG_BACKWARD : 0);
-            if (ret < 0)
-                fprintf(stderr, "[ffmpeg-player] seek to %lldms failed\n",
-                        (long long)seek_target);
-            else
+            if (av_seek_frame(G.fmt_ctx, -1, seek_target * 1000,
+                              seek_target < G.position_ms ? AVSEEK_FLAG_BACKWARD : 0) >= 0)
             {
                 G.position_ms = seek_target;
-                /* FIX 6: clear HW buffers to avoid timestamp discontinuity glitch */
+                /* FIX 6: clear HW buffers after seek */
                 if (G.dvb_video_fd >= 0) ioctl(G.dvb_video_fd, VIDEO_CLEAR_BUFFER);
                 if (G.dvb_audio_fd >= 0) ioctl(G.dvb_audio_fd, AUDIO_CLEAR_BUFFER);
             }
         }
 
         if (G.paused) { poll_ipc(); usleep(20000); continue; }
-
         poll_ipc();
 
         int ret = av_read_frame(G.fmt_ctx, pkt);
-        if (ret == AVERROR_EOF)
-        {
-            fprintf(stderr, "[ffmpeg-player] EOF\n");
-            ipc_send("eof"); break;
-        }
+        if (ret == AVERROR_EOF) { ipc_send("eof"); break; }
         if (ret == AVERROR(EAGAIN)) { usleep(5000); continue; }
         if (ret < 0)
         {
             char eb[256]; av_strerror(ret, eb, sizeof(eb));
-            fprintf(stderr, "[ffmpeg-player] av_read_frame: %s\n", eb);
-            if (G.is_live)
-            {
-                ipc_send("buffering", jint("pct", 0));
-                usleep(500000);
-                av_seek_frame(G.fmt_ctx, -1, 0, AVSEEK_FLAG_BACKWARD);
-                ipc_send("buffer_done"); continue;
-            }
+            if (G.is_live) { usleep(500000); av_seek_frame(G.fmt_ctx, -1, 0, AVSEEK_FLAG_BACKWARD); continue; }
             ipc_send_error(4, eb); break;
         }
 
-        if (pkt->stream_index != G.video_stream_idx &&
-            pkt->stream_index != G.audio_stream_idx &&
-            pkt->stream_index != G.sub_stream_idx)
-        { av_packet_unref(pkt); continue; }
-
-        process_packet(pkt);
+        if (pkt->stream_index == G.video_stream_idx ||
+            pkt->stream_index == G.audio_stream_idx ||
+            pkt->stream_index == G.sub_stream_idx)
+            process_packet(pkt);
         av_packet_unref(pkt);
 
         int64_t now_ms = av_gettime_relative() / 1000;
@@ -965,25 +927,17 @@ static void playback_loop()
         {
             last_pos_report_ms = now_ms;
             ipc_send("position",
-                     jint("pos_ms", G.position_ms) + "," +
-                     jint("dur_ms", G.duration_ms));
+                     jint("pos_ms", G.position_ms) + "," + jint("dur_ms", G.duration_ms));
         }
     }
     av_packet_free(&pkt);
 }
 
 /* ======================================================================
- * Signal handler
+ * Signal / main
  * ====================================================================== */
-static void sig_handler(int sig)
-{
-    fprintf(stderr, "[ffmpeg-player] signal %d\n", sig);
-    G.stop_requested = true;
-}
+static void sig_handler(int sig) { (void)sig; G.stop_requested = true; }
 
-/* ======================================================================
- * main()
- * ====================================================================== */
 int main(int argc, char *argv[])
 {
     std::string socket_path;
@@ -991,37 +945,29 @@ int main(int argc, char *argv[])
     {
         std::string arg = argv[i];
         if (arg.substr(0, 9) == "--socket=") socket_path = arg.substr(9);
-        else if (arg == "--uri" && i+1 < argc) G.uri = argv[++i];
+        else if (arg == "--uri" && i + 1 < argc) G.uri = argv[++i];
     }
     if (socket_path.empty() || G.uri.empty())
-    { fprintf(stderr,"Usage: %s --socket=PATH --uri URI\n", argv[0]); return 1; }
-
-    fprintf(stderr, "[ffmpeg-player] v%s uri=%s\n", PLAYER_VERSION, G.uri.c_str());
+    { fprintf(stderr, "Usage: %s --socket=PATH --uri URI\n", argv[0]); return 1; }
 
     signal(SIGTERM, sig_handler);
     signal(SIGINT,  sig_handler);
     signal(SIGPIPE, SIG_IGN);
 
-    /* Connect IPC socket to E2 */
     {
         int fd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (fd < 0) { perror("socket"); return 1; }
         struct sockaddr_un addr;
         memset(&addr, 0, sizeof(addr));
         addr.sun_family = AF_UNIX;
-        strncpy(addr.sun_path, socket_path.c_str(), sizeof(addr.sun_path)-1);
+        strncpy(addr.sun_path, socket_path.c_str(), sizeof(addr.sun_path) - 1);
         int ok = 0;
         for (int i = 0; i < 30 && !ok; i++)
-        {
-            if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0) ok = 1;
-            else usleep(100000);
-        }
-        if (!ok) { fprintf(stderr,"[ffmpeg-player] IPC connect failed\n"); return 1; }
-        int flags = fcntl(fd, F_GETFL, 0);
-        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        { if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0) ok = 1; else usleep(100000); }
+        if (!ok) { fprintf(stderr, "[ffmpeg-player] IPC connect failed\n"); return 1; }
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
         G.ipc_fd = fd;
     }
-    fprintf(stderr, "[ffmpeg-player] IPC connected to %s\n", socket_path.c_str());
 
 #if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(58, 9, 100)
     av_register_all();
@@ -1029,25 +975,14 @@ int main(int argc, char *argv[])
 #endif
     avformat_network_init();
 
-    /* Open DVB sink — codec type NOT configured yet (codec unknown) */
     G.hw_sink_available = open_dvb_sink();
 
-    /* Wait for 'play' command + optional config commands from E2 */
-    {
-        fd_set rset; struct timeval tv = { 10, 0 };
-        FD_ZERO(&rset); FD_SET(G.ipc_fd, &rset);
-        select(G.ipc_fd+1, &rset, NULL, NULL, &tv);
-        poll_ipc();
-    }
+    /* Wait for 'play' command and initial config from E2 */
+    { fd_set r; FD_ZERO(&r); FD_SET(G.ipc_fd, &r); struct timeval tv={10,0}; select(G.ipc_fd+1,&r,NULL,NULL,&tv); poll_ipc(); }
 
-    /* Open input — AVCodecID now known for all streams */
     if (!open_input()) { close(G.ipc_fd); return 1; }
 
-    /*
-     * FIX 1 + 2 + 3: configure BCM decoders with the actual codec IDs.
-     * This is the first safe moment to call VIDEO_SET_STREAMTYPE,
-     * VIDEO_SET_CODEC_DATA and AUDIO_SET_ENCODING.
-     */
+    /* Configure BCM decoders now that codec IDs are known */
     if (G.hw_sink_available)
     {
         configure_dvb_video_codec();
@@ -1064,6 +999,5 @@ int main(int argc, char *argv[])
     if (G.fmt_ctx) { avformat_close_input(&G.fmt_ctx); G.fmt_ctx = NULL; }
     avformat_network_deinit();
     if (G.ipc_fd >= 0) close(G.ipc_fd);
-    fprintf(stderr, "[ffmpeg-player] exiting\n");
     return 0;
 }

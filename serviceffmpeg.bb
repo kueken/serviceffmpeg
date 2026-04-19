@@ -22,11 +22,16 @@ DEPENDS = " \
 
 RDEPENDS:${PN} = "enigma2 ffmpeg libass"
 
-inherit autotools pkgconfig pythonnative
+inherit autotools pkgconfig pythonnative python3-compileall
 
-# Pass STAGING_INCDIR and STAGING_LIBDIR so configure finds Python headers
-# This is the same approach enigma2.bb uses
+PACKAGE_ARCH = "${MACHINE_ARCH}"
+
+PROVIDES += "virtual/enigma2-mediaservice"
+RPROVIDES:${PN} += "virtual-enigma2-mediaservice"
+
 EXTRA_OECONF = " \
+    BUILD_SYS=${BUILD_SYS} \
+    HOST_SYS=${HOST_SYS} \
     STAGING_INCDIR=${STAGING_INCDIR} \
     STAGING_LIBDIR=${STAGING_LIBDIR} \
 "
@@ -35,15 +40,16 @@ do_install:append() {
     # Remove libtool archives and static libs - not needed for a plugin
     find ${D} -name "*.la" -delete
     find ${D} -name "*.a" -delete
-    # Remove __pycache__ dirs - OE regenerates them on target
-    find ${D} -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 }
 
 FILES:${PN} = " \
     ${libdir}/enigma2/python/Plugins/SystemPlugins/ServiceFFMPEG/*.so \
-    ${libdir}/enigma2/python/Plugins/SystemPlugins/ServiceFFMPEG/*.py \
+    ${libdir}/enigma2/python/Plugins/SystemPlugins/ServiceFFMPEG/*.pyc \
     ${bindir}/ffmpeg-player \
 "
 
-RCONFLICTS:${PN} = "servicemp3 servicehisilicon"
-RREPLACES:${PN}  = "servicemp3 servicehisilicon"
+# Cannot coexist with other media services
+RCONFLICTS:${PN} = "enigma2-plugin-systemplugins-servicemp3 \
+                    enigma2-plugin-systemplugins-servicehisilicon"
+RREPLACES:${PN}  = "enigma2-plugin-systemplugins-servicemp3 \
+                    enigma2-plugin-systemplugins-servicehisilicon"
