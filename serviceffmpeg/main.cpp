@@ -457,8 +457,7 @@ static bool write_video_h265(int fd, const uint8_t *data, int size,
                               uint64_t pts, const uint8_t *extra, int extra_size)
 {
     if(fd<0||!data||size<=0) return false;
-    static const uint8_t sc[]={0,0,0,1};
-    static uint8_t sc_buf[]={0,0,0,1};
+    static uint8_t sc_buf[]={0,0,0,1}; /* AnnexB startcode for HVCC NAL */
     uint8_t PesHeader[PES_MAX_HEADER_SIZE];
     int32_t fake_sc=(0<<8)|0x45;
 
@@ -672,8 +671,13 @@ struct PlayerState {
  * IPC
  * ==================================================================== */
 static void ipc_send(const std::string &evt, const std::string &params="")
-{ if(G.ipc_fd<0)return; std::string m="{\"evt\":\""+evt+"\"";
-  if(!params.empty())m+=","+params; m+="}\n"; write(G.ipc_fd,m.c_str(),m.length()); }
+{
+    if(G.ipc_fd<0) return;
+    std::string m="{\"evt\":\""+evt+"\"";
+    if(!params.empty()) m+=","+params;
+    m+="}\n";
+    write(G.ipc_fd,m.c_str(),m.length());
+}
 static void ipc_send_error(int c,const std::string &m)
 { ipc_send("error",jint("code",c)+","+jstr("msg",m)); }
 
@@ -1033,9 +1037,10 @@ static void handle_command(const std::string &cmd, const std::string &payload)
 
 static void poll_ipc()
 {
-    if(G.ipc_fd<0)return;
+    if(G.ipc_fd<0) return;
     char buf[4096]; ssize_t n=read(G.ipc_fd,buf,sizeof(buf)-1);
-    if(n<=0)return; buf[n]=0; G.recv_buf+=buf;
+    if(n<=0) return;
+    buf[n]=0; G.recv_buf+=buf;
     size_t pos;
     while((pos=G.recv_buf.find('\n'))!=std::string::npos){
         std::string line=G.recv_buf.substr(0,pos);G.recv_buf=G.recv_buf.substr(pos+1);

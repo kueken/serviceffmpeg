@@ -52,7 +52,7 @@ static std::string json_int(const std::string &key, long long val)
     char buf[64]; snprintf(buf, sizeof(buf), "%lld", val);
     return "\"" + key + "\":" + buf;
 }
-static std::string json_obj(const std::string &inner)
+[[maybe_unused]] static std::string json_obj(const std::string &inner)
 {
     return "{" + inner + "}";
 }
