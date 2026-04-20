@@ -1051,8 +1051,8 @@ static void playback_loop()
     AVPacket *pkt=av_packet_alloc();
     if(!pkt){ipc_send_error(1,"av_packet_alloc failed");return;}
 
-    ipc_send("started");
     send_track_info();
+    ipc_send("started");
     if(G.video_stream_idx>=0){
         AVStream *vs=G.fmt_ctx->streams[G.video_stream_idx];
         int fps=vs->avg_frame_rate.den>0?(int)(1000.0*vs->avg_frame_rate.num/vs->avg_frame_rate.den):0;

@@ -1095,11 +1095,11 @@ ePtr<iServiceInfoContainer> eServiceFfmpeg::getInfoObject(int w)
  * ====================================================================== */
 
 /* iPlayableService stubs */
-RESULT eServiceFfmpeg::setTarget(int, bool)             { return -1; }
+RESULT eServiceFfmpeg::setTarget(int, bool)                          { return -1; }
 RESULT eServiceFfmpeg::audioChannel(ePtr<iAudioChannelSelection> &p) { p=0; return -1; }
 RESULT eServiceFfmpeg::timeshift(ePtr<iTimeshiftService> &p)         { p=0; return -1; }
 RESULT eServiceFfmpeg::tap(ePtr<iTapService> &p)                     { p=0; return -1; }
-RESULT eServiceFfmpeg::cueSheet(ePtr<iCueSheet> &p)                  { p=0; return -1; }
+RESULT eServiceFfmpeg::cueSheet(ePtr<iCueSheet> &p)                  { p = this; return 0; }
 RESULT eServiceFfmpeg::audioDelay(ePtr<iAudioDelay> &p)              { p=0; return -1; }
 RESULT eServiceFfmpeg::rdsDecoder(ePtr<iRdsDecoder> &p)              { p=0; return -1; }
 RESULT eServiceFfmpeg::stream(ePtr<iStreamableService> &p)           { p=0; return -1; }

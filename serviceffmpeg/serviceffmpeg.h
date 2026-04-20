@@ -25,6 +25,7 @@
 #include <lib/dvb/epgcache.h>
 #include <lib/service/iservice.h>
 #include <lib/gui/esubtitle.h>
+#include <lib/dvb/metaparser.h>   // für eDVBMetaParser
 
 #include <string>
 #include <list>
@@ -201,6 +202,7 @@ class eServiceFfmpeg
     , public iAudioTrackSelection
     , public iSubtitleOutput
     , public iRecordableService
+    , public iCueSheet
 {
     DECLARE_REF(eServiceFfmpeg);
 
@@ -239,6 +241,11 @@ public:
     int    getInfo(int w);
     std::string getInfoString(int w);
     ePtr<iServiceInfoContainer> getInfoObject(int w);
+
+    /*--- iCueSheet---*/
+    PyObject *eServiceFfmpeg::getCutList() { return PyList_New(0); }
+    void      eServiceFfmpeg::setCutList(ePyObject) {}
+    void      eServiceFfmpeg::setCutListEnable(int) {}
 
     /* --- iPauseableService --- */
     RESULT pause();
