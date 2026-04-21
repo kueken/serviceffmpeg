@@ -6,6 +6,8 @@ plugindir = $(libdir)/enigma2/python/Plugins/SystemPlugins/ServiceFFMPEG
 plugin_LTLIBRARIES = serviceffmpeg.la
 
 serviceffmpeg_la_SOURCES = \
+	main.cpp \
+	bcm_ioctls.h \
 	serviceffmpeg.cpp \
 	serviceffmpeg.h \
 	pythonmodule.cpp
