@@ -6,8 +6,6 @@ plugindir = $(libdir)/enigma2/python/Plugins/SystemPlugins/ServiceFFMPEG
 plugin_LTLIBRARIES = serviceffmpeg.la
 
 serviceffmpeg_la_SOURCES = \
-	main.cpp \
-	bcm_ioctls.h \
 	serviceffmpeg.cpp \
 	serviceffmpeg.h \
 	pythonmodule.cpp
@@ -15,20 +13,18 @@ serviceffmpeg_la_SOURCES = \
 serviceffmpeg_la_CXXFLAGS = \
 	$(ENIGMA2_CFLAGS) \
 	$(FFMPEG_CFLAGS) \
-	$(SIGCPP_CFLAGS) \
 	$(PYTHON_CFLAGS) \
 	-fPIC \
 	-I$(top_srcdir)
 
 serviceffmpeg_la_LIBADD = \
 	$(ENIGMA2_LIBS) \
-	$(SIGCPP_LIBS) \
+	$(FFMPEG_LIBS) \
 	$(PYTHON_LIBS)
 
 serviceffmpeg_la_LDFLAGS = \
 	-module \
 	-avoid-version \
-	-shared \
 	-no-undefined
 
 # ---- External player binary --------------------------------------------
@@ -37,9 +33,7 @@ bin_PROGRAMS = ffmpeg-player
 noinst_HEADERS = bcm_ioctls.h
 
 ffmpeg_player_SOURCES = \
-    main.cpp \
-    bcm_ioctls.h        # optional — Automake erkennt Headers
-                         # automatisch über noinst_HEADERS
+	main.cpp
 
 ffmpeg_player_CXXFLAGS = \
 	$(FFMPEG_CFLAGS) \
