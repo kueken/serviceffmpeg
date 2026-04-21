@@ -291,11 +291,27 @@ static ssize_t write_retry(int fd, const void *buf, size_t count)
 {
     const uint8_t *p = (const uint8_t*)buf;
     size_t remain = count;
+    int eagain_count = 0;
     while (remain > 0) {
         ssize_t ret = write(fd, p, remain);
         if (ret < 0) {
-            if (errno == EINTR || errno == EAGAIN) { usleep(1000); continue; }
+            if (errno == EINTR) { continue; }
+            if (errno == EAGAIN) {
+                if (++eagain_count == 1)
+                    fprintf(stderr,"[player] write fd=%d: EAGAIN (waiting)\n", fd);
+                if (eagain_count > 5000) { /* 5s timeout */
+                    fprintf(stderr,"[player] write fd=%d: EAGAIN timeout, giving up\n", fd);
+                    return -1;
+                }
+                usleep(1000); continue;
+            }
+            fprintf(stderr,"[player] write fd=%d failed: %s\n", fd, strerror(errno));
             return -1;
+        }
+        if (eagain_count > 0) {
+            fprintf(stderr,"[player] write fd=%d: recovered after %d retries\n",
+                    fd, eagain_count);
+            eagain_count = 0;
         }
         p += ret; remain -= ret;
         if (remain > 0) usleep(1000);
@@ -1141,6 +1157,11 @@ int main(int argc,char *argv[])
     if(socket_path.empty()||G.uri.empty()){
         fprintf(stderr,"Usage: %s --socket=PATH --uri URI\n",argv[0]);return 1;}
 
+    /* Unbuffered stderr: enigma2 captures child stderr via a pipe.
+     * Without this, stdio buffers output and it appears late or never
+     * if the process is killed before the buffer flushes. */
+    setvbuf(stderr, NULL, _IONBF, 0);
+
     fprintf(stderr,"[player] v%s uri=%s\n",PLAYER_VERSION,G.uri.c_str());
     signal(SIGTERM,sig_handler);signal(SIGINT,sig_handler);signal(SIGPIPE,SIG_IGN);
 
@@ -1175,7 +1196,20 @@ int main(int argc,char *argv[])
     if(!open_input()){close_dvb_sink();close(G.ipc_fd);return 1;}
 
     if(G.hw_sink_available){
-        configure_dvb_video_codec();
+        if(G.video_stream_idx>=0){
+            configure_dvb_video_codec();
+        } else {
+            /* Audio-only: release video device back to DEMUX mode.
+             * Keeping it in MEMORY+FREEZE with no data causes the
+             * eDVBVideo driver to signal anomalies to E2, which
+             * triggers BufferIndicator before evStart arrives. */
+            fprintf(stderr,"[player] audio-only: releasing DVB video device\n");
+            ioctl(G.dvb_video_fd, VIDEO_CLEAR_BUFFER);
+            ioctl(G.dvb_video_fd, VIDEO_STOP);
+            ioctl(G.dvb_video_fd, VIDEO_SELECT_SOURCE, (void*)VIDEO_SOURCE_DEMUX);
+            close(G.dvb_video_fd);
+            G.dvb_video_fd = -1;
+        }
         if(G.audio_stream_idx>=0)
             configure_dvb_audio_codec(
                 G.fmt_ctx->streams[G.audio_stream_idx]->codecpar->codec_id);
