@@ -17,19 +17,25 @@
 #include <lib/components/file_eraser.h>
 #include <lib/dvb/epgcache.h>
 #include <lib/dvb/dvbtime.h>
+#include <lib/dvb/decoder.h>
 #include <lib/gui/esubtitle.h>
+#include <lib/service/service.h>
 
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <sys/types.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* Path to the external player binary - installed alongside the .so */
 #ifndef SFMP_PLAYER_BIN

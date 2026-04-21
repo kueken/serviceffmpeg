@@ -13,17 +13,20 @@ serviceffmpeg_la_SOURCES = \
 serviceffmpeg_la_CXXFLAGS = \
 	$(ENIGMA2_CFLAGS) \
 	$(FFMPEG_CFLAGS) \
+	$(SIGCPP_CFLAGS) \
 	$(PYTHON_CFLAGS) \
 	-fPIC \
 	-I$(top_srcdir)
 
 serviceffmpeg_la_LIBADD = \
 	$(ENIGMA2_LIBS) \
+	$(SIGCPP_LIBS) \
 	$(PYTHON_LIBS)
 
 serviceffmpeg_la_LDFLAGS = \
 	-module \
 	-avoid-version \
+	-shared \
 	-no-undefined
 
 # ---- External player binary --------------------------------------------
