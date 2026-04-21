@@ -802,20 +802,25 @@ static void configure_dvb_audio_codec(AVCodecID cid)
 
 static void close_dvb_sink()
 {
+    /* Reset DVB devices to DEMUX mode so E2 Live-TV works after exit.
+     * Do NOT close() the fds explicitly: closing before process exit causes
+     * the BCM kernel driver to drop state — the last decoded frame stays
+     * frozen on screen (Standbild bug) and the tuner reference count changes.
+     * The OS closes them automatically at process exit, which is the right
+     * moment. This matches exteplayer3 LinuxDvbStop() behavior exactly. */
     if(G.dvb_video_fd>=0){
-        ioctl(G.dvb_video_fd,VIDEO_CLEAR_BUFFER);
-        ioctl(G.dvb_video_fd,VIDEO_STOP);
-        ioctl(G.dvb_video_fd,VIDEO_SLOWMOTION,0);
-        ioctl(G.dvb_video_fd,VIDEO_FAST_FORWARD,0);
-        /* Zurück auf Demux-Quelle — Live-TV muss danach funktionieren */
-        ioctl(G.dvb_video_fd,VIDEO_SELECT_SOURCE,(void*)VIDEO_SOURCE_DEMUX);
-        close(G.dvb_video_fd); G.dvb_video_fd=-1;
+        ioctl(G.dvb_video_fd, VIDEO_CLEAR_BUFFER);
+        ioctl(G.dvb_video_fd, VIDEO_STOP);
+        ioctl(G.dvb_video_fd, VIDEO_SLOWMOTION, 0);
+        ioctl(G.dvb_video_fd, VIDEO_FAST_FORWARD, 0);
+        ioctl(G.dvb_video_fd, VIDEO_SELECT_SOURCE, (void*)VIDEO_SOURCE_DEMUX);
+        /* fd intentionally not closed here */
     }
     if(G.dvb_audio_fd>=0){
-        ioctl(G.dvb_audio_fd,AUDIO_CLEAR_BUFFER);
-        ioctl(G.dvb_audio_fd,AUDIO_STOP);
-        ioctl(G.dvb_audio_fd,AUDIO_SELECT_SOURCE,AUDIO_SOURCE_DEMUX);
-        close(G.dvb_audio_fd); G.dvb_audio_fd=-1;
+        ioctl(G.dvb_audio_fd, AUDIO_CLEAR_BUFFER);
+        ioctl(G.dvb_audio_fd, AUDIO_STOP);
+        ioctl(G.dvb_audio_fd, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX);
+        /* fd intentionally not closed here */
     }
 }
 
@@ -1206,8 +1211,10 @@ int main(int argc,char *argv[])
             fprintf(stderr,"[player] audio-only: releasing DVB video device\n");
             ioctl(G.dvb_video_fd, VIDEO_CLEAR_BUFFER);
             ioctl(G.dvb_video_fd, VIDEO_STOP);
+            ioctl(G.dvb_video_fd, VIDEO_SLOWMOTION, 0);
+            ioctl(G.dvb_video_fd, VIDEO_FAST_FORWARD, 0);
             ioctl(G.dvb_video_fd, VIDEO_SELECT_SOURCE, (void*)VIDEO_SOURCE_DEMUX);
-            close(G.dvb_video_fd);
+            /* fd intentionally not closed here, OS closes at exit */
             G.dvb_video_fd = -1;
         }
         if(G.audio_stream_idx>=0)
