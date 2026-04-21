@@ -831,8 +831,14 @@ static bool open_input()
     G.is_live=(G.fmt_ctx->duration<=0||!G.fmt_ctx->pb||
                (G.fmt_ctx->ctx_flags&AVFMTCTX_NOHEADER));
     G.seekable=!G.is_live||(G.fmt_ctx->pb&&G.fmt_ctx->pb->seekable);
-    G.video_stream_idx=av_find_best_stream(G.fmt_ctx,AVMEDIA_TYPE_VIDEO,-1,-1,NULL,0);
-    G.audio_stream_idx=av_find_best_stream(G.fmt_ctx,AVMEDIA_TYPE_AUDIO,-1,-1,NULL,0);
+    /* Normalize: av_find_best_stream returns AVERROR codes on failure,
+     * not -1. Map any negative value to -1 to avoid garbage index. */
+    {
+        int vsi=av_find_best_stream(G.fmt_ctx,AVMEDIA_TYPE_VIDEO,-1,-1,NULL,0);
+        int asi=av_find_best_stream(G.fmt_ctx,AVMEDIA_TYPE_AUDIO,-1,-1,NULL,0);
+        G.video_stream_idx=(vsi>=0)?vsi:-1;
+        G.audio_stream_idx=(asi>=0)?asi:-1;
+    }
 
     G.audio_tracks.clear(); G.sub_tracks.clear();
     for(unsigned i=0;i<G.fmt_ctx->nb_streams;i++){
@@ -1056,14 +1062,23 @@ static void playback_loop()
     AVPacket *pkt=av_packet_alloc();
     if(!pkt){ipc_send_error(1,"av_packet_alloc failed");return;}
 
-    send_track_info();
-    ipc_send("started");
+    /* Send info and video_size BEFORE started so E2 has all metadata
+     * when evStart fires. This prevents the BufferIndicator from
+     * appearing due to missing evVideoSizeChanged. */
+    send_track_info();   /* evt=info: duration, tracks, container */
     if(G.video_stream_idx>=0){
         AVStream *vs=G.fmt_ctx->streams[G.video_stream_idx];
-        int fps=vs->avg_frame_rate.den>0?(int)(1000.0*vs->avg_frame_rate.num/vs->avg_frame_rate.den):0;
-        ipc_send("video_size",jint("w",vs->codecpar->width)+","+jint("h",vs->codecpar->height)+","+
-                 jint("aspect",2)+","+jint("fps",fps)+","+jbool("progressive",true));
+        int fps=vs->avg_frame_rate.den>0
+                ?(int)(1000.0*vs->avg_frame_rate.num/vs->avg_frame_rate.den):0;
+        ipc_send("video_size",
+                 jint("w",vs->codecpar->width)+","+
+                 jint("h",vs->codecpar->height)+","+
+                 jint("aspect",2)+","+
+                 jint("fps",fps)+","+
+                 jbool("progressive",true));
     }
+    ipc_send("started"); /* LAST: fires evStart in E2 */
+
     int64_t last_pos=av_gettime_relative()/1000;
 
     while(!G.stop_requested){
