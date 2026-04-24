@@ -26,6 +26,7 @@
 #include <signal.h>
 #include <sys/prctl.h>
 #include <sys/wait.h>
+#include <dirent.h>    /* opendir/readdir for /proc/self/fd */
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
@@ -380,11 +381,25 @@ bool eServiceFfmpeg::launchPlayer()
     if (pid == 0)
     {
         /* Child process */
-        /* Close all E2 file descriptors except stdin/stdout/stderr */
-        int maxfd = sysconf(_SC_OPEN_MAX);
-        for (int fd = 3; fd < maxfd; fd++)
+        /* Close all inherited E2 file descriptors.
+         * Use /proc/self/fd to avoid iterating up to OPEN_MAX (can be 1M+)
+         * which takes 1-2 seconds on slow embedded hardware and eats into
+         * the 5-second accept() timeout in the parent. */
         {
-            if (fd != srv_fd) close(fd);
+            DIR *dirp = opendir("/proc/self/fd");
+            if (dirp) {
+                int dfd = dirfd(dirp);
+                struct dirent *de;
+                while ((de = readdir(dirp)) != NULL) {
+                    if (de->d_name[0] == '.') continue;
+                    int fd = atoi(de->d_name);
+                    if (fd >= 3 && fd != dfd) close(fd);
+                }
+                closedir(dirp);
+            } else {
+                /* Fallback: limit to a reasonable max */
+                for (int fd = 3; fd < 1024; fd++) close(fd);
+            }
         }
 
         char sock_arg[128];
@@ -602,7 +617,6 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
         m_progressive = (bool)json_get_int(payload, "progressive");
         eDebug("[serviceffmpeg] video %dx%d aspect=%d fps=%d",
                m_width, m_height, m_aspect, m_framerate);
-        m_event((iPlayableService*)this, iPlayableService::evVideoSizeChanged);
         m_event((iPlayableService*)this, iPlayableService::evVideoSizeChanged);
     }
     else if (evt == SFMP_EVT_SUBTITLE_PAGE)
@@ -1137,6 +1151,8 @@ RESULT eServiceFfmpeg::getFilenameExtension(std::string &ext) { ext = "ts"; retu
 
 /* ======================================================================
  * Module registration
+ * Factory is registered explicitly in PyInit_serviceffmpeg() (pythonmodule.cpp).
+ * eAutoInitPtr is NOT used here because it fires unreliably for dynamically
+ * loaded Python plugins — the .so is loaded after the eAutoInit phase.
  * ====================================================================== */
-eAutoInitPtr<eServiceFactoryFfmpeg> init_eServiceFactoryFfmpeg(
-    eAutoInitNumbers::service + 1, "eServiceFactoryFfmpeg");
+/* eAutoInitPtr removed: registration handled by pythonmodule.cpp */
