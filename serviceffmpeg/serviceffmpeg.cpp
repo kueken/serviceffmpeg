@@ -236,8 +236,10 @@ eServiceFactoryFfmpeg::eServiceFactoryFfmpeg()
         /* Playlists / streams */
         ext.push_back("m3u");  ext.push_back("m3u8"); ext.push_back("pls");
 
-        /* Replace servicemp3 (0x1001) as the default handler */
-        sc->removeServiceFactory(0x1001);
+        /* Register as 0x1001 (eServiceMP3 slot).
+         * E2's FileList and MediaPlayer always generate service references
+         * with type 0x1001 for local media files. We take over this slot
+         * so every local file play attempt reaches our FFmpeg handler. */
         sc->addServiceFactory(eServiceFactoryFfmpeg::id, this, ext);
     }
     m_service_info = new eStaticServiceFfmpegInfo();

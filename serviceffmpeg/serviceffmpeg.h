@@ -165,7 +165,7 @@ public:
     eServiceFactoryFfmpeg();
     ~eServiceFactoryFfmpeg();
 
-    enum { id = 0x138A };
+    enum { id = 0x1001 };  /* eServiceMP3 slot: E2 always generates 0x1001 for local media */
 
     RESULT play(const eServiceReference &, ePtr<iPlayableService> &);
     RESULT record(const eServiceReference &, ePtr<iRecordableService> &);
