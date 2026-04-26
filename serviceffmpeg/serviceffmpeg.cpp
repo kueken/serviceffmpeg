@@ -26,7 +26,7 @@
 #include <signal.h>
 #include <sys/prctl.h>
 #include <sys/wait.h>
-#include <dirent.h>    /* opendir/readdir for /proc/self/fd */
+#include <dirent.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
@@ -236,10 +236,8 @@ eServiceFactoryFfmpeg::eServiceFactoryFfmpeg()
         /* Playlists / streams */
         ext.push_back("m3u");  ext.push_back("m3u8"); ext.push_back("pls");
 
-        /* Register as 0x1001 (eServiceMP3 slot).
-         * E2's FileList and MediaPlayer always generate service references
-         * with type 0x1001 for local media files. We take over this slot
-         * so every local file play attempt reaches our FFmpeg handler. */
+        /* Replace servicemp3 (0x1001) as the default handler */
+        sc->removeServiceFactory(0x1001);
         sc->addServiceFactory(eServiceFactoryFfmpeg::id, this, ext);
     }
     m_service_info = new eStaticServiceFfmpegInfo();
@@ -377,16 +375,40 @@ bool eServiceFfmpeg::launchPlayer()
     /* Build command line for ffmpeg-player */
     std::string uri = buildUri();
 
+    /* Hand over DVB devices to the player process.
+     * Analogous to Neutrino's cPlayback::Open() which calls
+     * audioDecoder->closeDevice() and videoDecoder->closeDevice()
+     * before exteplayer3 opens the devices.
+     *
+     * We cannot directly close E2's internal DVB fds, but we can
+     * signal the kernel driver via /proc/stb to release Live-TV
+     * demux feeding. The player then opens the devices fresh.
+     *
+     * Without this, E2's demux and our MEMORY-mode player both
+     * drive the same BCM decoder simultaneously → no picture. */
+    {
+        /* Stop E2's demux feed to the hardware decoder */
+        int tmp_vfd = open("/dev/dvb/adapter0/video0", O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        if (tmp_vfd >= 0) {
+            ioctl(tmp_vfd, VIDEO_STOP);
+            ioctl(tmp_vfd, VIDEO_SELECT_SOURCE, (void*)VIDEO_SOURCE_DEMUX);
+            close(tmp_vfd);
+        }
+        int tmp_afd = open("/dev/dvb/adapter0/audio0", O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        if (tmp_afd >= 0) {
+            ioctl(tmp_afd, AUDIO_STOP);
+            ioctl(tmp_afd, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX);
+            close(tmp_afd);
+        }
+    }
+
     pid_t pid = fork();
     if (pid < 0) { eDebug("[serviceffmpeg] fork() failed: %m"); close(srv_fd); return false; }
 
     if (pid == 0)
     {
         /* Child process */
-        /* Close all inherited E2 file descriptors.
-         * Use /proc/self/fd to avoid iterating up to OPEN_MAX (can be 1M+)
-         * which takes 1-2 seconds on slow embedded hardware and eats into
-         * the 5-second accept() timeout in the parent. */
+        /* Close inherited E2 fds efficiently via /proc/self/fd */
         {
             DIR *dirp = opendir("/proc/self/fd");
             if (dirp) {
@@ -399,7 +421,6 @@ bool eServiceFfmpeg::launchPlayer()
                 }
                 closedir(dirp);
             } else {
-                /* Fallback: limit to a reasonable max */
                 for (int fd = 3; fd < 1024; fd++) close(fd);
             }
         }
@@ -1153,8 +1174,5 @@ RESULT eServiceFfmpeg::getFilenameExtension(std::string &ext) { ext = "ts"; retu
 
 /* ======================================================================
  * Module registration
- * Factory is registered explicitly in PyInit_serviceffmpeg() (pythonmodule.cpp).
- * eAutoInitPtr is NOT used here because it fires unreliably for dynamically
- * loaded Python plugins — the .so is loaded after the eAutoInit phase.
  * ====================================================================== */
-/* eAutoInitPtr removed: registration handled by pythonmodule.cpp */
+/* Factory registration handled by PyInit_serviceffmpeg() in pythonmodule.cpp */
