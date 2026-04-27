@@ -31,6 +31,8 @@
 #include <sys/un.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#include <linux/dvb/video.h>   /* VIDEO_STOP, VIDEO_SELECT_SOURCE, VIDEO_SOURCE_DEMUX */
+#include <linux/dvb/audio.h>   /* AUDIO_STOP, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX */
 #include <sys/types.h>
 #include <errno.h>
 #include <stdio.h>
