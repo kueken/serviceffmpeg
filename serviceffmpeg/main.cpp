@@ -287,34 +287,66 @@ static void UpdatePesHeaderPayloadSize(uint8_t *data, int32_t size)
 /* ====================================================================
  * Write mit Retry (wie writev_with_retry in exteplayer3/writer.c)
  * ==================================================================== */
+/*
+ * WriteWithRetry — ported from exteplayer3/output/writer/mipsel/writer.c
+ *
+ * Uses select() to wait until the DVB device fd is ready to accept data,
+ * rather than blind usleep() polling. This has two advantages:
+ *   1. No CPU waste waiting for a slow BCM decoder to drain its buffer.
+ *   2. Immediate abort when stop/seek is requested (checks G.stop_requested).
+ *
+ * The original exteplayer3 uses a "pipefd" control channel to signal abort.
+ * We use a timeout (100ms) + G.stop_requested check instead, which is
+ * simpler and fits our single-process architecture.
+ */
 static ssize_t write_retry(int fd, const void *buf, size_t count)
 {
-    const uint8_t *p = (const uint8_t*)buf;
-    size_t remain = count;
-    int eagain_count = 0;
-    while (remain > 0) {
-        ssize_t ret = write(fd, p, remain);
-        if (ret < 0) {
-            if (errno == EINTR) { continue; }
-            if (errno == EAGAIN) {
-                if (++eagain_count == 1)
-                    fprintf(stderr,"[player] write fd=%d: EAGAIN (waiting)\n", fd);
-                if (eagain_count > 5000) { /* 5s timeout */
-                    fprintf(stderr,"[player] write fd=%d: EAGAIN timeout, giving up\n", fd);
-                    return -1;
-                }
-                usleep(1000); continue;
-            }
-            fprintf(stderr,"[player] write fd=%d failed: %s\n", fd, strerror(errno));
+    const uint8_t *p   = (const uint8_t *)buf;
+    size_t          rem = count;
+
+    while (rem > 0)
+    {
+        /* Abort immediately if stop or seek was requested */
+        if (G.stop_requested.load() || G.seek_target_ms.load() >= 0)
+            return -1;
+
+        /* Wait until fd is writable (up to 100ms per select call) */
+        fd_set wfds;
+        FD_ZERO(&wfds);
+        FD_SET(fd, &wfds);
+        struct timeval tv = { 0, 100000 }; /* 100 ms */
+
+        int sel = select(fd + 1, NULL, &wfds, NULL, &tv);
+        if (sel < 0)
+        {
+            if (errno == EINTR) continue;
+            fprintf(stderr, "[player] write fd=%d select error: %s\n",
+                    fd, strerror(errno));
             return -1;
         }
-        if (eagain_count > 0) {
-            fprintf(stderr,"[player] write fd=%d: recovered after %d retries\n",
-                    fd, eagain_count);
-            eagain_count = 0;
+        if (sel == 0)
+            continue; /* timeout — retry select, check stop_requested again */
+
+        if (!FD_ISSET(fd, &wfds))
+            continue;
+
+        ssize_t ret = write(fd, p, rem);
+        if (ret < 0)
+        {
+            if (errno == EINTR || errno == EAGAIN) continue;
+            fprintf(stderr, "[player] write fd=%d failed: %s\n",
+                    fd, strerror(errno));
+            return -1;
         }
-        p += ret; remain -= ret;
-        if (remain > 0) usleep(1000);
+        if (ret == 0)
+        {
+            /* fd said writable but wrote 0 — wait 10ms and retry */
+            usleep(10000);
+            continue;
+        }
+
+        p   += ret;
+        rem -= ret;
     }
     return (ssize_t)count;
 }
@@ -322,10 +354,11 @@ static ssize_t write_retry(int fd, const void *buf, size_t count)
 static ssize_t writev_retry(int fd, const struct iovec *iov, int iovcnt)
 {
     ssize_t total = 0;
-    for (int i = 0; i < iovcnt; i++) {
-        ssize_t ret = write_retry(fd, iov[i].iov_base, iov[i].iov_len);
-        if (ret < 0) return -1;
-        total += ret;
+    for (int i = 0; i < iovcnt; i++)
+    {
+        if (write_retry(fd, iov[i].iov_base, iov[i].iov_len) < 0)
+            return -1;
+        total += (ssize_t)iov[i].iov_len;
     }
     return total;
 }
@@ -379,8 +412,10 @@ static bool write_video_h264(int fd, const uint8_t *data, int size,
     static const uint8_t sc[]={0,0,0,1};
     uint8_t PesHeader[PES_MAX_HEADER_SIZE];
 
-    /* Fake Start Code: version(8bit) | PES_VERSION_FAKE_START_CODE(0x45) */
-    int32_t fake_sc = (0 << 8) | 0x45;
+    /* Fake Start Code = (Version << 8) | PES_VERSION_FAKE_START_CODE
+     * Version is always 0 (confirmed from container_ffmpeg.c).
+     * PES_VERSION_FAKE_START_CODE = 0x31 (from exteplayer3 pes.h, NOT 0x45) */
+    int32_t fake_sc = (0 << 8) | 0x31;
 
     bool is_annexb=(size>3)&&(data[0]==0&&data[1]==0&&data[2]==0&&data[3]==1);
 
@@ -411,7 +446,8 @@ static bool write_video_h264(int fd, const uint8_t *data, int size,
 
     struct iovec iov[64]; int ic=0;
     iov[ic].iov_base=PesHeader;
-    iov[ic++].iov_len=InsertPesHeader(PesHeader,-1,MPEG_VIDEO_PES_START_CODE,pts,fake_sc);
+    /* AVCC path: NO fake start code (0), per exteplayer3 h264.c */
+    iov[ic++].iov_len=InsertPesHeader(PesHeader,-1,MPEG_VIDEO_PES_START_CODE,pts,0);
     if(g_h264.initialHeader){
         g_h264.initialHeader=false;
         iov[ic].iov_base=g_h264.codecData; iov[ic++].iov_len=g_h264.codecDataLen;
@@ -475,7 +511,7 @@ static bool write_video_h265(int fd, const uint8_t *data, int size,
     if(fd<0||!data||size<=0) return false;
     static uint8_t sc_buf[]={0,0,0,1}; /* AnnexB startcode for HVCC NAL */
     uint8_t PesHeader[PES_MAX_HEADER_SIZE];
-    int32_t fake_sc=(0<<8)|0x45;
+    int32_t fake_sc=(0<<8)|0x31;  /* PES_VERSION_FAKE_START_CODE=0x31 per exteplayer3 pes.h */
 
     if(!g_h265.codecData && extra) h265_prepare_codec_data(extra,extra_size);
 
@@ -539,7 +575,39 @@ static bool write_video_mpeg2(int fd, const uint8_t *data, int size,
 }
 
 /* ====================================================================
- * Generischer Video Writer (MPEG4, VC1, VP, etc.)
+ * VP6/VP8/VP9 Writer
+ * Portiert aus exteplayer3/output/writer/mipsel/vp.c
+ *
+ * VP frames need a "BCMV" magic marker appended to the PES header.
+ * The BCM driver uses this to identify VP bitstream frames.
+ * PES_packet_length covers: payload + 4 (BCMV) + 6 (len field itself)
+ * ==================================================================== */
+static const uint8_t BCMV_MAGIC[4] = {'B','C','M','V'};
+
+static bool write_video_vp(int fd, const uint8_t *data, int size, uint64_t pts)
+{
+    if(fd<0||!data||size<=0) return false;
+    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 4]; /* +4 for BCMV */
+    struct iovec iov[2];
+
+    uint32_t pes_hdr_len = InsertPesHeader(PesHeader, size, MPEG_VIDEO_PES_START_CODE, pts, 0);
+    /* Patch PES_packet_length to include BCMV (4 bytes) + length field adjustment */
+    uint16_t plen = size + 4 + 6;
+    PesHeader[4] = (plen >> 8) & 0xFF;
+    PesHeader[5] = plen & 0xFF;
+    /* Append BCMV magic directly after PES header */
+    memcpy(PesHeader + pes_hdr_len, BCMV_MAGIC, 4);
+    pes_hdr_len += 4;
+
+    iov[0].iov_base = PesHeader;
+    iov[0].iov_len  = pes_hdr_len;
+    iov[1].iov_base = (void*)data;
+    iov[1].iov_len  = size;
+    return writev_retry(fd, iov, 2) >= 0;
+}
+
+/* ====================================================================
+ * Generischer Video Writer (MPEG4, VC1, etc.)
  * Portiert aus mpeg4.c
  * ==================================================================== */
 static bool g_mpeg4_initial_header=true;
@@ -615,6 +683,12 @@ static bool write_video_packet(int fd, AVCodecID cid,
     case AV_CODEC_ID_HEVC:       return write_video_h265(fd,data,size,pts,extra,extra_size);
     case AV_CODEC_ID_MPEG1VIDEO:
     case AV_CODEC_ID_MPEG2VIDEO: return write_video_mpeg2(fd,data,size,pts,extra,extra_size);
+    /* VP frames need BCMV magic marker — BCM driver requires it */
+    case AV_CODEC_ID_VP6:
+    case AV_CODEC_ID_VP6F:
+    case AV_CODEC_ID_VP6A:
+    case AV_CODEC_ID_VP8:
+    case AV_CODEC_ID_VP9:        return write_video_vp(fd,data,size,pts);
     default:                     return write_video_generic(fd,data,size,pts,extra,extra_size);
     }
 }
