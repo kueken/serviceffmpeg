@@ -519,8 +519,7 @@ static void aac_build_adts_header(const uint8_t *extra, int extra_size,
         ch_cfg    = (extra[1] >> 3) & 0x0F;
         profile   = (aot > 0) ? aot - 1 : 1;  /* ADTS profile = aot-1 */
         if (profile > 3) profile = 1;           /* clamp to valid ADTS range */
-        fprintf(stderr, "[player] AAC from extradata: aot=%d sf_idx=%d ch=%d
-",
+        fprintf(stderr, "[player] AAC from extradata: aot=%d sf_idx=%d ch=%d\n",
                 aot, sf_idx, ch_cfg);
     }
     else
@@ -529,8 +528,7 @@ static void aac_build_adts_header(const uint8_t *extra, int extra_size,
         for (int i = 0; i < 16; i++) {
             if (sf_table[i] == sample_rate) { sf_idx = i; break; }
         }
-        fprintf(stderr, "[player] AAC from stream params: profile=%d sf=%d ch=%d
-",
+        fprintf(stderr, "[player] AAC from stream params: profile=%d sf=%d ch=%d\n",
                 profile, sample_rate, ch_cfg);
     }
 
