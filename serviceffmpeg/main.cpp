@@ -696,12 +696,19 @@ static bool write_video_packet(int fd, AVCodecID cid,
 static bool write_audio_packet(int fd, AVCodecID cid,
                                 const uint8_t *data, int size, uint64_t pts)
 {
+    /* PES start codes per exteplayer3/output/writer/mipsel/:
+     *   MPEG_AUDIO_PES_START_CODE (0xc0): MP2, MP3, AAC, AC3, DTS, WMA
+     *   PRIVATE_STREAM_1          (0xbd): LPCM/PCM only
+     * AC3 and DTS use 0xc0 here — the BCM driver identifies them via
+     * AUDIO_SET_BYPASS_MODE, NOT the PES stream_id. */
     switch(cid){
     case AV_CODEC_ID_AAC:
     case AV_CODEC_ID_AAC_LATM:  return write_audio_aac(fd,data,size,pts);
-    case AV_CODEC_ID_MP2:
-    case AV_CODEC_ID_MP3:       return write_audio_mpeg(fd,data,size,pts);
-    default:                    return write_audio_private(fd,data,size,pts);
+    case AV_CODEC_ID_PCM_S16LE:
+    case AV_CODEC_ID_PCM_S16BE:
+    case AV_CODEC_ID_PCM_S24LE:
+    case AV_CODEC_ID_PCM_S24BE: return write_audio_private(fd,data,size,pts); /* 0xbd */
+    default:                    return write_audio_mpeg(fd,data,size,pts);     /* 0xc0 */
     }
 }
 
