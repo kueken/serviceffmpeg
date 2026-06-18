@@ -218,6 +218,12 @@ static int bcm_bypass_secondary(audio_stream_type_t t)
     }
 }
 
+/* Forward-declared control flags used by write_retry().
+ * Defined as part of PlayerState but needed here before that struct.
+ * write_retry() checks these to abort DVB writes on stop/seek. */
+static std::atomic<bool>    g_stop_requested{false};
+static std::atomic<int64_t> g_seek_target_ms{-1};
+
 /* ====================================================================
  * PES Header Builder
  * Direkte Portierung von exteplayer3/output/writer/common/pes.c
@@ -293,10 +299,10 @@ static void UpdatePesHeaderPayloadSize(uint8_t *data, int32_t size)
  * Uses select() to wait until the DVB device fd is ready to accept data,
  * rather than blind usleep() polling. This has two advantages:
  *   1. No CPU waste waiting for a slow BCM decoder to drain its buffer.
- *   2. Immediate abort when stop/seek is requested (checks G.stop_requested).
+ *   2. Immediate abort when stop/seek is requested (checks g_stop_requested).
  *
  * The original exteplayer3 uses a "pipefd" control channel to signal abort.
- * We use a timeout (100ms) + G.stop_requested check instead, which is
+ * We use a timeout (100ms) + g_stop_requested check instead, which is
  * simpler and fits our single-process architecture.
  */
 static ssize_t write_retry(int fd, const void *buf, size_t count)
@@ -307,7 +313,7 @@ static ssize_t write_retry(int fd, const void *buf, size_t count)
     while (rem > 0)
     {
         /* Abort immediately if stop or seek was requested */
-        if (G.stop_requested.load() || G.seek_target_ms.load() >= 0)
+        if (g_stop_requested.load() || g_seek_target_ms.load() >= 0)
             return -1;
 
         /* Wait until fd is writable (up to 100ms per select call) */
@@ -742,9 +748,11 @@ struct PlayerState {
     std::vector<AudioTrack> audio_tracks;
     std::vector<SubTrack>   sub_tracks;
     int active_audio_track;
-    std::atomic<bool>    running,paused,stop_requested;
+    std::atomic<bool>    running,paused;
+    /* stop_requested and seek_target_ms are global (g_stop_requested,
+     * g_seek_target_ms) so write_retry() can access them before
+     * PlayerState is defined. */
     std::atomic<int>     speed;
-    std::atomic<int64_t> seek_target_ms;
     pthread_mutex_t seek_mutex;
     int dvb_video_fd,dvb_audio_fd;
     bool hw_sink_available;
@@ -755,8 +763,8 @@ struct PlayerState {
     bool is_live,seekable;
     PlayerState():ipc_fd(-1),buffer_size(BUFFER_SIZE_DEFAULT),fmt_ctx(NULL),
         video_stream_idx(-1),audio_stream_idx(-1),sub_stream_idx(-1),
-        active_audio_track(-1),running(false),paused(false),stop_requested(false),
-        speed(0),seek_target_ms(-1),dvb_video_fd(-1),dvb_audio_fd(-1),
+        active_audio_track(-1),running(false),paused(false),
+        speed(0),dvb_video_fd(-1),dvb_audio_fd(-1),
         hw_sink_available(false),
         active_video_codec_id(AV_CODEC_ID_NONE),active_audio_codec_id(AV_CODEC_ID_NONE),
         video_extra(NULL),video_extra_size(0),record_ctx(NULL),recording(false),
@@ -1107,13 +1115,13 @@ static void handle_command(const std::string &cmd, const std::string &payload)
         if(G.dvb_video_fd>=0)ioctl(G.dvb_video_fd,VIDEO_CONTINUE);
         if(G.dvb_audio_fd>=0)ioctl(G.dvb_audio_fd,AUDIO_CONTINUE);
     } else if(cmd=="stop"){
-        G.stop_requested=true;
+        g_stop_requested=true;
     } else if(cmd=="seek"){
         int64_t p=json_get_int(payload,"pos_ms");
-        pthread_mutex_lock(&G.seek_mutex);G.seek_target_ms=p;pthread_mutex_unlock(&G.seek_mutex);
+        pthread_mutex_lock(&G.seek_mutex);g_seek_target_ms=p;pthread_mutex_unlock(&G.seek_mutex);
     } else if(cmd=="seek_rel"){
         int64_t d=json_get_int(payload,"delta_ms");
-        pthread_mutex_lock(&G.seek_mutex);G.seek_target_ms=G.position_ms+d;pthread_mutex_unlock(&G.seek_mutex);
+        pthread_mutex_lock(&G.seek_mutex);g_seek_target_ms=G.position_ms+d;pthread_mutex_unlock(&G.seek_mutex);
     } else if(cmd=="set_speed"){
         G.speed=(int)json_get_int(payload,"speed");
         if(G.dvb_video_fd>=0){
@@ -1183,10 +1191,10 @@ static void playback_loop()
 
     int64_t last_pos=av_gettime_relative()/1000;
 
-    while(!G.stop_requested){
+    while(!g_stop_requested){
         pthread_mutex_lock(&G.seek_mutex);
-        int64_t seek_t=G.seek_target_ms.load();
-        if(seek_t>=0)G.seek_target_ms=-1;
+        int64_t seek_t=g_seek_target_ms.load();
+        if(seek_t>=0)g_seek_target_ms=-1;
         pthread_mutex_unlock(&G.seek_mutex);
 
         if(seek_t>=0){
@@ -1230,7 +1238,7 @@ static void playback_loop()
 /* ====================================================================
  * Signal / main
  * ==================================================================== */
-static void sig_handler(int){G.stop_requested=true;}
+static void sig_handler(int){g_stop_requested=true;}
 
 int main(int argc,char *argv[])
 {
