@@ -483,6 +483,77 @@ struct H265State {
     void reset(){initialHeader=true;}
 } g_h265;
 
+/* ====================================================================
+ * AAC ADTS State
+ * Stores stream-specific ADTS header built from AVCodecParameters extradata.
+ * An MP4 container stores AAC as raw frames (no ADTS sync word).
+ * The BCM decoder requires ADTS-wrapped frames.
+ * We build the header once from the AudioSpecificConfig (2-byte extradata)
+ * so profile, sample rate, and channel count are always correct.
+ * ==================================================================== */
+struct AACState {
+    uint8_t adts_header[7];
+    bool    has_header;
+    bool    stream_has_adts;  /* true if source already has 0xFF 0xF? sync */
+    AACState():has_header(false),stream_has_adts(false){ memset(adts_header,0,7); }
+} g_aac;
+
+static void aac_build_adts_header(const uint8_t *extra, int extra_size,
+                                   int sample_rate, int channels)
+{
+    /* Sampling frequency index table */
+    static const int sf_table[] = {
+        96000,88200,64000,48000,44100,32000,24000,22050,
+        16000,12000,11025,8000,7350,0,0,0
+    };
+
+    int profile = 1;  /* AAC-LC = 1 (ADTS object type = profile+1) */
+    int sf_idx  = 4;  /* default 44100 Hz */
+    int ch_cfg  = (channels > 0 && channels < 8) ? channels : 2;
+
+    if (extra && extra_size >= 2)
+    {
+        /* AudioSpecificConfig: profile_ObjectType(5) | sf_index(4) | channel(4) */
+        int aot   = (extra[0] >> 3) & 0x1F;
+        sf_idx    = ((extra[0] & 0x07) << 1) | ((extra[1] >> 7) & 0x01);
+        ch_cfg    = (extra[1] >> 3) & 0x0F;
+        profile   = (aot > 0) ? aot - 1 : 1;  /* ADTS profile = aot-1 */
+        if (profile > 3) profile = 1;           /* clamp to valid ADTS range */
+        fprintf(stderr, "[player] AAC from extradata: aot=%d sf_idx=%d ch=%d
+",
+                aot, sf_idx, ch_cfg);
+    }
+    else
+    {
+        /* No extradata: guess from sample rate */
+        for (int i = 0; i < 16; i++) {
+            if (sf_table[i] == sample_rate) { sf_idx = i; break; }
+        }
+        fprintf(stderr, "[player] AAC from stream params: profile=%d sf=%d ch=%d
+",
+                profile, sample_rate, ch_cfg);
+    }
+
+    /* Build 7-byte ADTS header (no CRC variant):
+     * syncword(12)=0xFFF | ID(1)=0 | layer(2)=0 | protection_absent(1)=1
+     * profile(2) | sf_index(4) | private(1)=0 | channel(3) | orig(1)=0 | home(1)=0
+     * copyright_id_bit(1)=0 | copyright_id_start(1)=0 | frame_length(13) | ...
+     * aac_frame_length is set per-packet in write_audio_aac()
+     * Here we set the fixed fields: */
+    g_aac.adts_header[0] = 0xFF;
+    g_aac.adts_header[1] = 0xF1;  /* MPEG-4, no CRC */
+    g_aac.adts_header[2] = (uint8_t)(((profile & 0x3) << 6) |
+                                      ((sf_idx  & 0xF) << 2) |
+                                      ((ch_cfg  >> 2) & 0x1));
+    g_aac.adts_header[3] = (uint8_t)(((ch_cfg & 0x3) << 6));
+    /* Bytes 4-6 contain frame_length + buffer_fullness + num_blocks
+     * These are set per-packet. Initialize to zero. */
+    g_aac.adts_header[4] = 0x00;
+    g_aac.adts_header[5] = 0x1F;
+    g_aac.adts_header[6] = 0xFC;
+    g_aac.has_header = true;
+}
+
 static void h265_prepare_codec_data(const uint8_t *extra, int extra_size)
 {
     if(!extra||extra_size<23||extra[0]==0) return;
@@ -639,17 +710,29 @@ static bool write_video_generic(int fd, const uint8_t *data, int size,
 /* ====================================================================
  * Audio Writers
  * ==================================================================== */
-static const uint8_t DefaultADTSHeader[]={0xFF,0xF1,0x50,0x80,0x00,0x1F,0xFC};
-
 static bool write_audio_aac(int fd, const uint8_t *data, int size, uint64_t pts)
 {
     if(fd<0||!data||size<=0) return false;
     uint8_t PesHeader[PES_MAX_HEADER_SIZE];
-    bool has_adts=(size>1)&&((data[0]==0xFF)&&((data[1]&0xF0)==0xF0));
+    /* Check if source already has ADTS sync word (0xFFF?) */
+    bool has_adts = (size>1) && (data[0]==0xFF) && ((data[1]&0xF0)==0xF0);
     struct iovec iov[3]; int ic=0;
     iov[ic].iov_base=PesHeader; iov[ic++].iov_len=0;
     int payload=size;
-    if(!has_adts){ iov[ic].iov_base=(void*)DefaultADTSHeader; iov[ic++].iov_len=7; payload+=7; }
+    if(!has_adts && g_aac.has_header)
+    {
+        /* Build per-packet ADTS header with correct frame_length.
+         * frame_length = 7 (header) + payload size, packed into bits 30..17 */
+        uint8_t adts[7];
+        memcpy(adts, g_aac.adts_header, 7);
+        uint16_t frame_len = (uint16_t)(size + 7);
+        adts[3] = (adts[3] & 0xFC) | ((frame_len >> 11) & 0x03);
+        adts[4] = (frame_len >> 3) & 0xFF;
+        adts[5] = ((frame_len & 0x07) << 5) | 0x1F;
+        adts[6] = 0xFC;
+        iov[ic].iov_base = adts; iov[ic++].iov_len = 7;
+        payload += 7;
+    }
     iov[ic].iov_base=(void*)data; iov[ic++].iov_len=size;
     iov[0].iov_len=InsertPesHeader(PesHeader,payload,MPEG_AUDIO_PES_START_CODE,pts,0);
     return writev_retry(fd,iov,ic)>=0;
@@ -874,6 +957,17 @@ static void configure_dvb_audio_codec(AVCodecID cid)
     if(G.dvb_audio_fd<0) return;
     G.active_audio_codec_id=cid;
 
+    /* Build stream-correct AAC ADTS header from extradata */
+    if((cid==AV_CODEC_ID_AAC || cid==AV_CODEC_ID_AAC_LATM)
+       && G.audio_stream_idx>=0 && G.fmt_ctx)
+    {
+        AVStream *as_=G.fmt_ctx->streams[G.audio_stream_idx];
+        aac_build_adts_header(as_->codecpar->extradata,
+                              as_->codecpar->extradata_size,
+                              as_->codecpar->sample_rate,
+                              as_->codecpar->ch_layout.nb_channels);
+    }
+
     audio_stream_type_t t=codec_to_bcm_audio(cid);
     int ret=ioctl(G.dvb_audio_fd,AUDIO_SET_BYPASS_MODE,bcm_bypass_primary(t));
     if(ret<0)
@@ -902,6 +996,11 @@ static void close_dvb_sink()
         ioctl(G.dvb_video_fd, VIDEO_STOP);
         ioctl(G.dvb_video_fd, VIDEO_SLOWMOTION, 0);
         ioctl(G.dvb_video_fd, VIDEO_FAST_FORWARD, 0);
+        /* VIDEO_CONTINUE before SELECT_SOURCE(DEMUX) is critical:
+         * without it the BCM hardware decoder stays in frozen state
+         * after VIDEO_STOP, causing the Standbild (frozen frame) bug
+         * where E2 Live-TV shows a still image with audio running. */
+        ioctl(G.dvb_video_fd, VIDEO_CONTINUE);
         ioctl(G.dvb_video_fd, VIDEO_SELECT_SOURCE, (void*)VIDEO_SOURCE_DEMUX);
         /* fd intentionally not closed here */
     }
