@@ -95,7 +95,7 @@ extern "C" {
 #define POSITION_REPORT_INTERVAL_MS 500
 
 /* PES Konstanten — aus exteplayer3/output/writer/common/pes.c */
-#define INVALID_PTS_VALUE           ((uint64_t)0x1FFFFFFFFLL)
+#define INVALID_PTS_VALUE           ((uint64_t)0x200000000ull)  /* writer.h canonical value */
 #define MAX_PES_PACKET_SIZE         65515
 #define MPEG_VIDEO_PES_START_CODE   0xE0
 #define MPEG_AUDIO_PES_START_CODE   0xC0
@@ -650,35 +650,187 @@ static bool write_video_mpeg2(int fd, const uint8_t *data, int size,
 }
 
 /* ====================================================================
- * VP6/VP8/VP9 Writer
- * Portiert aus exteplayer3/output/writer/mipsel/vp.c
- *
- * VP frames need a "BCMV" magic marker appended to the PES header.
- * The BCM driver uses this to identify VP bitstream frames.
- * PES_packet_length covers: payload + 4 (BCMV) + 6 (len field itself)
+ * VC1 Writer — portiert aus vc1.c (Kodi STBsink patch)
+ * PesHeader[6] |= 1 setzt das Original/Copy-Flag, das manche
+ * mipsel-Empfänger (z.B. et4x00) benötigen.
+ * VC1 Frame Start Code {0,0,1,0x0D} wird vorangestellt wenn fehlend.
+ * VIDEO_SET_CODEC_DATA für Codec-Extradata (nicht auf Dreambox).
  * ==================================================================== */
-static const uint8_t BCMV_MAGIC[4] = {'B','C','M','V'};
+static const uint8_t VC1_FRAME_START_CODE[4] = {0,0,1,0x0D};
+static bool g_vc1_initial = true;
 
-static bool write_video_vp(int fd, const uint8_t *data, int size, uint64_t pts)
+static bool write_video_vc1(int fd, const uint8_t *data, int size,
+                             uint64_t pts, const uint8_t *extra, int extra_size)
 {
     if(fd<0||!data||size<=0) return false;
-    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 4]; /* +4 for BCMV */
+    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 4];
+    struct iovec iov[5]; int ic=0;
+    uint32_t PacketLength = 0;
+
+    iov[ic++] = {PesHeader, 0};
+
+    if(g_vc1_initial && extra && extra_size > 0)
+    {
+        g_vc1_initial = false;
+        /* Build codec data: 8 zero bytes + extradata (vc1.c: private_size+8) */
+        static uint8_t codec_buf[2048];
+        int codec_len = extra_size + 8;
+        if(codec_len <= (int)sizeof(codec_buf))
+        {
+            memset(codec_buf, 0, 8);
+            memcpy(codec_buf + 8, extra, extra_size);
+            /* Try VIDEO_SET_CODEC_DATA first (preferred on non-Dreambox) */
+            video_codec_data_t vcd;
+            vcd.length = codec_len;
+            vcd.data   = codec_buf;
+            if(ioctl(fd, VIDEO_SET_CODEC_DATA, &vcd) != 0)
+            {
+                /* Fallback: send as iov */
+                iov[ic].iov_base = codec_buf;
+                iov[ic++].iov_len = codec_len;
+                PacketLength += codec_len;
+            }
+        }
+    }
+
+    /* Prepend VC1 frame start code if not already present */
+    bool need_fsc = (size < 4 ||
+                     memcmp(data, VC1_FRAME_START_CODE, 4) != 0);
+    if(need_fsc)
+    {
+        iov[ic].iov_base = (void*)VC1_FRAME_START_CODE;
+        iov[ic++].iov_len = 4;
+        PacketLength += 4;
+    }
+
+    iov[ic].iov_base = (void*)data;
+    iov[ic++].iov_len = size;
+    PacketLength += size;
+
+    iov[0].iov_len = InsertPesHeader(PesHeader, PacketLength,
+                                     MPEG_VIDEO_PES_START_CODE, pts, 0);
+    /* Copy/Original flag — required on mipsel (et4x00 et al.) */
+    PesHeader[6] |= 1;
+    if(need_fsc)
+    {
+        /* Embed frame start code directly after PES header */
+        memcpy(PesHeader + iov[0].iov_len, VC1_FRAME_START_CODE, 4);
+        iov[0].iov_len += 4;
+        /* Remove the separate iov entry we added earlier */
+        for(int i=1; i<ic-1; i++) iov[i]=iov[i+1];
+        --ic;
+    }
+    return writev_retry(fd, iov, ic) >= 0;
+}
+
+/* ====================================================================
+ * WMV Writer — portiert aus wmv.c (Kodi STBsink patch)
+ * WMV3/VC1_SM: 33-Byte Codec Data Header mit Width/Height
+ * ==================================================================== */
+static bool g_wmv_initial = true;
+
+static bool write_video_wmv(int fd, const uint8_t *data, int size,
+                             uint64_t pts, const uint8_t *extra, int extra_size,
+                             int width, int height)
+{
+    if(fd<0||!data||size<=0) return false;
+    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 4];
+    struct iovec iov[5]; int ic=0;
+    uint32_t PacketLength = 0;
+
+    iov[ic++] = {PesHeader, 0};
+
+    if(g_wmv_initial)
+    {
+        g_wmv_initial = false;
+        /* 33-byte WMV codec data header: 18 zeros + W(2) + H(2) + extradata(max 4) */
+        static uint8_t wmv_codec[33];
+        memset(wmv_codec, 0, 33);
+        wmv_codec[18] = (width  >> 8) & 0xFF;
+        wmv_codec[19] = width  & 0xFF;
+        wmv_codec[20] = (height >> 8) & 0xFF;
+        wmv_codec[21] = height & 0xFF;
+        int copy = (extra_size > 4) ? 4 : extra_size;
+        if(extra && copy > 0) memcpy(wmv_codec + 22, extra, copy);
+
+        video_codec_data_t vcd;
+        vcd.length = 33;
+        vcd.data   = wmv_codec;
+        if(ioctl(fd, VIDEO_SET_CODEC_DATA, &vcd) != 0)
+        {
+            iov[ic].iov_base = wmv_codec;
+            iov[ic++].iov_len = 33;
+            PacketLength += 33;
+        }
+    }
+
+    bool need_fsc = (size < 4 ||
+                     memcmp(data, VC1_FRAME_START_CODE, 4) != 0);
+    if(need_fsc) PacketLength += 4;
+
+    iov[ic].iov_base = (void*)data;
+    iov[ic++].iov_len = size;
+    PacketLength += size;
+
+    iov[0].iov_len = InsertPesHeader(PesHeader, PacketLength,
+                                     MPEG_VIDEO_PES_START_CODE, pts, 0);
+    PesHeader[6] |= 1;
+    if(need_fsc)
+    {
+        memcpy(PesHeader + iov[0].iov_len, VC1_FRAME_START_CODE, 4);
+        iov[0].iov_len += 4;
+    }
+    return writev_retry(fd, iov, ic) >= 0;
+}
+
+/* ====================================================================
+ * VP6/VP8/VP9 Writer
+ * Portiert aus Kodi STBsink patch: vp.c
+ *
+ * VP frames need BCMV magic + 6-byte length field after PES header.
+ * For VP9 on non-VuPlus/non-HiSilicon/non-Dreambox (= STB_OTHER = et9200):
+ *   uses UpdatePesHeaderPayloadSize path with separate iov writes.
+ * VP6 adds one extra zero byte after the 6-byte length field.
+ * ==================================================================== */
+static bool write_video_vp(int fd, const uint8_t *data, int size,
+                            uint64_t pts, bool is_vp6, bool is_vp9)
+{
+    if(fd<0||!data||size<=0) return false;
+    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 16]; /* extra space for BCMV+len+flag */
     struct iovec iov[2];
 
-    uint32_t pes_hdr_len = InsertPesHeader(PesHeader, size, MPEG_VIDEO_PES_START_CODE, pts, 0);
-    /* Patch PES_packet_length to include BCMV (4 bytes) + length field adjustment */
-    uint16_t plen = size + 4 + 6;
-    PesHeader[4] = (plen >> 8) & 0xFF;
-    PesHeader[5] = plen & 0xFF;
-    /* Append BCMV magic directly after PES header */
-    memcpy(PesHeader + pes_hdr_len, BCMV_MAGIC, 4);
+    /* For VP9 on Vuplus: zero the PTS (we are STB_OTHER, so use normal pts) */
+    uint64_t use_pts = pts;
+
+    uint32_t pes_hdr_len = InsertPesHeader(PesHeader, size,
+                                           MPEG_VIDEO_PES_START_CODE, use_pts, 0);
+
+    uint32_t bcmv_len = size + 4 + 6;  /* data + "BCMV" + 4-byte len + 2 bytes */
+    memcpy(PesHeader + pes_hdr_len, "BCMV", 4);
     pes_hdr_len += 4;
+    if(is_vp6) ++bcmv_len;
+
+    PesHeader[pes_hdr_len++] = (bcmv_len >> 24) & 0xFF;
+    PesHeader[pes_hdr_len++] = (bcmv_len >> 16) & 0xFF;
+    PesHeader[pes_hdr_len++] = (bcmv_len >>  8) & 0xFF;
+    PesHeader[pes_hdr_len++] = (bcmv_len      ) & 0xFF;
+    PesHeader[pes_hdr_len++] = 0;
+    /* VP9 non-Vuplus gets flag=1, others get 0 */
+    PesHeader[pes_hdr_len++] = (!is_vp9) ? 0 : 1;
+    if(is_vp6) PesHeader[pes_hdr_len++] = 0;
+
+    int32_t payload_len = size + pes_hdr_len - 6;
+    UpdatePesHeaderPayloadSize(PesHeader, payload_len);
 
     iov[0].iov_base = PesHeader;
     iov[0].iov_len  = pes_hdr_len;
     iov[1].iov_base = (void*)data;
     iov[1].iov_len  = size;
-    return writev_retry(fd, iov, 2) >= 0;
+
+    /* Write header separately, then data — matches vp.c for non-Vuplus */
+    if(write_retry(fd, PesHeader, pes_hdr_len) < 0) return false;
+    if(write_retry(fd, data, size) < 0) return false;
+    return true;
 }
 
 /* ====================================================================
@@ -770,12 +922,20 @@ static bool write_video_packet(int fd, AVCodecID cid,
     case AV_CODEC_ID_HEVC:       return write_video_h265(fd,data,size,pts,extra,extra_size);
     case AV_CODEC_ID_MPEG1VIDEO:
     case AV_CODEC_ID_MPEG2VIDEO: return write_video_mpeg2(fd,data,size,pts,extra,extra_size);
-    /* VP frames need BCMV magic marker — BCM driver requires it */
+    /* VC1/WMV: frame start code + codec data header + Original flag */
+    case AV_CODEC_ID_VC1:        return write_video_vc1(fd,data,size,pts,extra,extra_size);
+    case AV_CODEC_ID_WMV3:       return write_video_wmv(fd,data,size,pts,extra,extra_size,
+                                     /* width/height stored in PlayerState */
+                                     (G.video_stream_idx>=0 ?
+                                      G.fmt_ctx->streams[G.video_stream_idx]->codecpar->width : 0),
+                                     (G.video_stream_idx>=0 ?
+                                      G.fmt_ctx->streams[G.video_stream_idx]->codecpar->height : 0));
+    /* VP frames need BCMV magic + length field — BCM driver requires it */
     case AV_CODEC_ID_VP6:
     case AV_CODEC_ID_VP6F:
-    case AV_CODEC_ID_VP6A:
-    case AV_CODEC_ID_VP8:
-    case AV_CODEC_ID_VP9:        return write_video_vp(fd,data,size,pts);
+    case AV_CODEC_ID_VP6A:       return write_video_vp(fd,data,size,pts,true,false);
+    case AV_CODEC_ID_VP8:        return write_video_vp(fd,data,size,pts,false,false);
+    case AV_CODEC_ID_VP9:        return write_video_vp(fd,data,size,pts,false,true);
     default:                     return write_video_generic(fd,data,size,pts,extra,extra_size);
     }
 }
@@ -1302,6 +1462,7 @@ static void playback_loop()
                 if(G.dvb_audio_fd>=0)ioctl(G.dvb_audio_fd,AUDIO_CLEAR_BUFFER);
                 g_h264.reset(); g_h265.reset();
                 g_mpeg2_must_send_header=true; g_mpeg4_initial_header=true;
+                g_vc1_initial=true; g_wmv_initial=true;
             }
         }
 
