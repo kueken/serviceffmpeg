@@ -370,6 +370,44 @@ static ssize_t writev_retry(int fd, const struct iovec *iov, int iovcnt)
 }
 
 /* ====================================================================
+ * Track / State
+ * ==================================================================== */
+struct AudioTrack{int stream_idx,pid,channels,samplerate,bitrate;
+                  std::string lang,codec; AVCodecID codec_id;};
+struct SubTrack  {int stream_idx; std::string lang,codec; bool bitmap;};
+
+struct PlayerState {
+    int ipc_fd; std::string recv_buf,uri,useragent,extra_headers; int buffer_size;
+    AVFormatContext *fmt_ctx;
+    int video_stream_idx,audio_stream_idx,sub_stream_idx;
+    std::vector<AudioTrack> audio_tracks;
+    std::vector<SubTrack>   sub_tracks;
+    int active_audio_track;
+    std::atomic<bool>    running,paused;
+    /* stop_requested and seek_target_ms are global (g_stop_requested,
+     * g_seek_target_ms) so write_retry() can access them before
+     * PlayerState is defined. */
+    std::atomic<int>     speed;
+    pthread_mutex_t seek_mutex;
+    int dvb_video_fd,dvb_audio_fd;
+    bool hw_sink_available;
+    AVCodecID active_video_codec_id,active_audio_codec_id;
+    uint8_t *video_extra; int video_extra_size;
+    AVFormatContext *record_ctx; bool recording; pthread_mutex_t record_mutex;
+    int64_t duration_ms,position_ms;
+    bool is_live,seekable;
+    PlayerState():ipc_fd(-1),buffer_size(BUFFER_SIZE_DEFAULT),fmt_ctx(NULL),
+        video_stream_idx(-1),audio_stream_idx(-1),sub_stream_idx(-1),
+        active_audio_track(-1),running(false),paused(false),
+        speed(0),dvb_video_fd(-1),dvb_audio_fd(-1),
+        hw_sink_available(false),
+        active_video_codec_id(AV_CODEC_ID_NONE),active_audio_codec_id(AV_CODEC_ID_NONE),
+        video_extra(NULL),video_extra_size(0),record_ctx(NULL),recording(false),
+        duration_ms(0),position_ms(0),is_live(false),seekable(false)
+    { pthread_mutex_init(&seek_mutex,NULL); pthread_mutex_init(&record_mutex,NULL); }
+} G;
+
+/* ====================================================================
  * H.264 Writer
  * Portiert aus exteplayer3/output/writer/mipsel/h264.c
  * ==================================================================== */
@@ -974,44 +1012,6 @@ static std::string json_get_str(const std::string &j, const std::string &k)
 static long long json_get_int(const std::string &j, const std::string &k)
 { std::string n="\""+k+"\":"; size_t p=j.find(n); if(p==std::string::npos)return 0;
   return strtoll(j.c_str()+p+n.length(),NULL,10); }
-
-/* ====================================================================
- * Track / State
- * ==================================================================== */
-struct AudioTrack{int stream_idx,pid,channels,samplerate,bitrate;
-                  std::string lang,codec; AVCodecID codec_id;};
-struct SubTrack  {int stream_idx; std::string lang,codec; bool bitmap;};
-
-struct PlayerState {
-    int ipc_fd; std::string recv_buf,uri,useragent,extra_headers; int buffer_size;
-    AVFormatContext *fmt_ctx;
-    int video_stream_idx,audio_stream_idx,sub_stream_idx;
-    std::vector<AudioTrack> audio_tracks;
-    std::vector<SubTrack>   sub_tracks;
-    int active_audio_track;
-    std::atomic<bool>    running,paused;
-    /* stop_requested and seek_target_ms are global (g_stop_requested,
-     * g_seek_target_ms) so write_retry() can access them before
-     * PlayerState is defined. */
-    std::atomic<int>     speed;
-    pthread_mutex_t seek_mutex;
-    int dvb_video_fd,dvb_audio_fd;
-    bool hw_sink_available;
-    AVCodecID active_video_codec_id,active_audio_codec_id;
-    uint8_t *video_extra; int video_extra_size;
-    AVFormatContext *record_ctx; bool recording; pthread_mutex_t record_mutex;
-    int64_t duration_ms,position_ms;
-    bool is_live,seekable;
-    PlayerState():ipc_fd(-1),buffer_size(BUFFER_SIZE_DEFAULT),fmt_ctx(NULL),
-        video_stream_idx(-1),audio_stream_idx(-1),sub_stream_idx(-1),
-        active_audio_track(-1),running(false),paused(false),
-        speed(0),dvb_video_fd(-1),dvb_audio_fd(-1),
-        hw_sink_available(false),
-        active_video_codec_id(AV_CODEC_ID_NONE),active_audio_codec_id(AV_CODEC_ID_NONE),
-        video_extra(NULL),video_extra_size(0),record_ctx(NULL),recording(false),
-        duration_ms(0),position_ms(0),is_live(false),seekable(false)
-    { pthread_mutex_init(&seek_mutex,NULL); pthread_mutex_init(&record_mutex,NULL); }
-} G;
 
 /* ====================================================================
  * IPC
