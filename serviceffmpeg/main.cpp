@@ -907,12 +907,22 @@ static bool write_audio_aac(int fd, const uint8_t *data, int size, uint64_t pts)
     struct iovec iov[3]; int ic=0;
     iov[ic].iov_base=PesHeader; iov[ic++].iov_len=0;
     int payload=size;
-    if(!has_adts && g_aac.has_header)
+    if(!has_adts)
     {
-        /* Build per-packet ADTS header with correct frame_length.
-         * frame_length = 7 (header) + payload size, packed into bits 30..17 */
-        uint8_t adts[7];
-        memcpy(adts, g_aac.adts_header, 7);
+        /* Build per-packet ADTS header.
+         * Nutze stream-spezifischen Header wenn verfügbar,
+         * sonst Fallback: AAC-LC 44100Hz Stereo. */
+        static uint8_t adts[7];  /* static: Pointer bleibt gültig */
+        if(g_aac.has_header)
+        {
+            memcpy(adts, g_aac.adts_header, 7);
+        }
+        else
+        {
+            /* Fallback: AAC-LC, 44100 Hz, Stereo */
+            adts[0]=0xFF; adts[1]=0xF1; adts[2]=0x50;
+            adts[3]=0x80; adts[4]=0x00; adts[5]=0x1F; adts[6]=0xFC;
+        }
         uint16_t frame_len = (uint16_t)(size + 7);
         adts[3] = (adts[3] & 0xFC) | ((frame_len >> 11) & 0x03);
         adts[4] = (frame_len >> 3) & 0xFF;
@@ -1054,6 +1064,15 @@ static bool open_dvb_sink()
         return false;
     }
 
+    /* Vollständiger Reset bevor wir MEMORY-Modus setzen.
+     * VIDEO_STOP + DEMUX erst, dann CLEAR + MEMORY.
+     * Das verhindert einen hängenden VIDEO_PLAY wenn der vorherige
+     * Service (z.B. MediaPlayer) die Devices nicht sauber freigegeben hat. */
+    ioctl(G.dvb_video_fd, VIDEO_STOP);
+    ioctl(G.dvb_video_fd, VIDEO_SELECT_SOURCE, (void*)VIDEO_SOURCE_DEMUX);
+    ioctl(G.dvb_audio_fd, AUDIO_STOP);
+    ioctl(G.dvb_audio_fd, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX);
+
     /* VIDEO: CLEAR → SELECT_SOURCE(MEMORY) → FREEZE */
     if(ioctl(G.dvb_video_fd,VIDEO_CLEAR_BUFFER)==-1)
         fprintf(stderr,"[player] VIDEO_CLEAR_BUFFER: %s\n",strerror(errno));
@@ -1154,19 +1173,15 @@ static void close_dvb_sink()
         ioctl(G.dvb_video_fd, VIDEO_STOP);
         ioctl(G.dvb_video_fd, VIDEO_SLOWMOTION, 0);
         ioctl(G.dvb_video_fd, VIDEO_FAST_FORWARD, 0);
-        /* VIDEO_CONTINUE before SELECT_SOURCE(DEMUX) is critical:
-         * without it the BCM hardware decoder stays in frozen state
-         * after VIDEO_STOP, causing the Standbild (frozen frame) bug
-         * where E2 Live-TV shows a still image with audio running. */
         ioctl(G.dvb_video_fd, VIDEO_CONTINUE);
         ioctl(G.dvb_video_fd, VIDEO_SELECT_SOURCE, (void*)VIDEO_SOURCE_DEMUX);
-        /* fd intentionally not closed here */
+        /* fd not closed: OS closes at process exit */
     }
     if(G.dvb_audio_fd>=0){
         ioctl(G.dvb_audio_fd, AUDIO_CLEAR_BUFFER);
         ioctl(G.dvb_audio_fd, AUDIO_STOP);
         ioctl(G.dvb_audio_fd, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX);
-        /* fd intentionally not closed here */
+        /* fd not closed: OS closes at process exit */
     }
 }
 
