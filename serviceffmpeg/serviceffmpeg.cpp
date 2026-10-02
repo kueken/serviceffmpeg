@@ -7,8 +7,6 @@
  * License: GPL v2
  */
 
-#include "serviceffmpeg.h"
-
 #include <lib/base/ebase.h>
 #include <lib/base/eerror.h>
 #include <lib/base/init.h>
@@ -39,6 +37,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include "serviceffmpeg.h"
 
 /* Path to the external player binary - installed alongside the .so */
 #ifndef SFMP_PLAYER_BIN
