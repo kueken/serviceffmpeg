@@ -1,5 +1,7 @@
 name: AI Autofix
 on:
+  push:
+    branches: [ test ]
   workflow_dispatch:        # nur manuell starten – bewusst kein Auto-Trigger
   # schedule:
   #   - cron: "0 3 * * 1"   # optional: jeden Montag 03:00
