@@ -1,6 +1,7 @@
 #ifndef __SERVICEFFMPEG_H
 #define __SERVICEFFMPEG_H
 
+#include <sys/types.h>            /* pid_t */
 /*
  * serviceffmpeg.h
  *
@@ -309,6 +310,7 @@ private:
     ePtr<eServiceEvent>         m_event_now;
     ePtr<eServiceEvent>         m_event_next;
 
+    /* pid_t requires <sys/types.h> (included above) */
     pid_t                       m_player_pid;
     int                         m_ipc_fd;
     std::string                 m_socket_path;
@@ -327,8 +329,8 @@ private:
     void        parseTrackList(const std::string &json);
     void        parseVideoInfo(const std::string &json);
     void        parseSubtitle(const std::string &json);
-    pts_t       msToPts(int64_t ms) const  { return ms * 90;  }
-    int64_t     ptsToMs(pts_t pts) const   { return pts / 90; }
+    pts_t       msToPts(int64_t ms) const  { return (pts_t)(ms * 90);  }
+    int64_t     ptsToMs(pts_t pts) const   { return (int64_t)(pts / 90); }
 };
 
 #endif /* __SERVICEFFMPEG_H */
