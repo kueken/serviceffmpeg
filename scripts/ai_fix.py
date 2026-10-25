@@ -82,6 +82,8 @@ def try_apply(patch: str) -> bool:
     return True
 
 def iter_sources():
+    if p.name in EXCLUDE_FILES:
+    continue
     seen = 0
     for root in TARGETS:
         for p in Path(root).rglob("*"):
