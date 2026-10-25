@@ -48,6 +48,7 @@ static struct PyModuleDef moduledef =
 PyMODINIT_FUNC PyInit_serviceffmpeg(void)
 {
     PyObject *module = NULL;
+    PyObject *methods = NULL;
     /*
      * Factory explizit instanziieren.
      * Der Konstruktor von eServiceFactoryFfmpeg ruft addServiceFactory()
@@ -68,6 +69,14 @@ PyMODINIT_FUNC PyInit_serviceffmpeg(void)
         s_factory = factory;
         /* Konstruktor hat bereits eDebug ausgegeben wenn erfolgreich */
     }
+
+    methods = PyCapsule_New(NULL, NULL, NULL);
+    if (!methods)
+    {
+        s_factory.reset();
+        return NULL;
+    }
+    Py_DECREF(methods);
 
     module = PyModule_Create(&moduledef);
     if (!module)
