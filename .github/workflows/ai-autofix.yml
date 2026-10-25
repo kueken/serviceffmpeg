@@ -1,4 +1,4 @@
-name: AI Autofix (test branch only, no PR)
+name: AI Autofix (PR to test)
 
 on:
   push:
@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write          # nur noch zum Pushen auf test nötig
-  # pull-requests: write   # entfernt — der Bot erstellt keine PRs mehr
+  contents: write
+  pull-requests: write
 
 jobs:
   fix:
@@ -39,21 +39,33 @@ jobs:
           python scripts/ai_fix.py
           echo "changed=$(cat /tmp/ai_fix_changed 2>/dev/null || echo 0)" >> "$GITHUB_OUTPUT"
 
-      - name: Commit and push to test
+      - name: Create PR to test
         if: steps.fix.outputs.changed != '0'
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "nothing to commit"
-            exit 0
-          fi
-          git commit -m "chore(ai-autofix): automated code improvements [skip ci]"
-          git push origin test
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: test
+          branch: ai/autofix-${{ github.run_id }}
+          delete-branch: true
+          title: "[AI] Autofix Vorschlag"
+          body: |
+            Automatisch erzeugt vom AI-Autofix-Workflow.
+
+            **Bitte prüfen und manuell mergen.** Der Bot hat Code geändert,
+            ohne zu kompilieren.
+
+            - Quellbranch: `test`
+            - Zielbranch: `test`
+            - Lauf-ID: `${{ github.run_id }}`
+            - Auslöser: `${{ github.event_name }}` von `${{ github.actor }}`
+          labels: |
+            automated
+            ai-autofix
 
       - name: Summary
         if: always()
         run: |
           echo "changed=$(cat /tmp/ai_fix_changed 2>/dev/null || echo 0)" >> "$GITHUB_STEP_SUMMARY"
-          echo "Lauf abgeschlossen. Kein PR erstellt — manueller Merge nach main bleibt deine Entscheidung." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Kein direkter Commit auf test — bei Änderungen wurde ein PR erstellt." >> "$GITHUB_STEP_SUMMARY"
+          echo "PR manuell prüfen und mergen." >> "$GITHUB_STEP_SUMMARY"
