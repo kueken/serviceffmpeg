@@ -58,11 +58,21 @@ PyMODINIT_FUNC PyInit_serviceffmpeg(void)
      */
     if (!s_factory)
     {
-        s_factory = new eServiceFactoryFfmpeg();
+        eServiceFactoryFfmpeg *factory = new (std::nothrow) eServiceFactoryFfmpeg();
+        if (!factory)
+        {
+            PyErr_NoMemory();
+            return NULL;
+        }
+        s_factory = factory;
         /* Konstruktor hat bereits eDebug ausgegeben wenn erfolgreich */
     }
 
-    return PyModule_Create(&moduledef);
+    PyObject *module = PyModule_Create(&moduledef);
+    if (!module)
+        return NULL;
+
+    return module;
 }
 
 /*
