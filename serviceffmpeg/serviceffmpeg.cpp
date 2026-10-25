@@ -358,7 +358,7 @@ bool eServiceFfmpeg::launchPlayer()
 
     /* Create the Unix domain socket server side BEFORE fork,
      * so the player can connect as soon as it's ready */
-    int srv_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    int srv_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (srv_fd < 0) { eDebug("[serviceffmpeg] socket() failed: %m"); return false; }
 
     struct sockaddr_un addr;
@@ -457,7 +457,7 @@ bool eServiceFfmpeg::launchPlayer()
         return false;
     }
 
-    m_ipc_fd = accept(srv_fd, NULL, NULL);
+    m_ipc_fd = accept4(srv_fd, NULL, NULL, SOCK_NONBLOCK);
     close(srv_fd);  /* Done with listen socket */
 
     if (m_ipc_fd < 0) { eDebug("[serviceffmpeg] accept() failed: %m"); killPlayer(); return false; }
@@ -537,7 +537,7 @@ void eServiceFfmpeg::ipcReceive(int)
     ssize_t n = read(m_ipc_fd, buf, sizeof(buf) - 1);
     if (n <= 0)
     {
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return;
         eDebug("[serviceffmpeg] IPC pipe closed (player exited)");
         /* Player died unexpectedly - signal EOF so E2 can react */
         if (m_state == stRunning || m_state == stPaused)
@@ -919,6 +919,7 @@ RESULT eServiceFfmpeg::seekTo(pts_t to)
 {
     int64_t ms = ptsToMs(to);
     eDebug("[serviceffmpeg] seekTo %lld ms", (long long)ms);
+    m_last_position = to;
     return ipcSend(SFMP_CMD_SEEK, json_int("pos_ms", ms)) ? 0 : -1;
 }
 

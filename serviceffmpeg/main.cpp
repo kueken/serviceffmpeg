@@ -313,7 +313,7 @@ static ssize_t write_retry(int fd, const void *buf, size_t count)
     while (rem > 0)
     {
         /* Abort immediately if stop or seek was requested */
-        if (g_stop_requested.load() || g_seek_target_ms.load() >= 0)
+        if (g_stop_requested.load())
             return -1;
 
         /* Wait until fd is writable (up to 100ms per select call) */
@@ -1173,7 +1173,6 @@ static void close_dvb_sink()
         ioctl(G.dvb_video_fd, VIDEO_STOP);
         ioctl(G.dvb_video_fd, VIDEO_SLOWMOTION, 0);
         ioctl(G.dvb_video_fd, VIDEO_FAST_FORWARD, 0);
-        ioctl(G.dvb_video_fd, VIDEO_CONTINUE);
         ioctl(G.dvb_video_fd, VIDEO_SELECT_SOURCE, (void*)VIDEO_SOURCE_DEMUX);
         /* fd not closed: OS closes at process exit */
     }
@@ -1486,7 +1485,7 @@ static void playback_loop()
 
         int ret=av_read_frame(G.fmt_ctx,pkt);
         if(ret==AVERROR_EOF){ipc_send("eof");break;}
-        if(ret==AVERROR(EAGAIN)){usleep(5000);continue;}
+        if(ret==AVERROR(EAGAIN)){poll_ipc();usleep(5000);continue;}
         if(ret<0){
             char eb[256];av_strerror(ret,eb,sizeof(eb));
             if(G.is_live){usleep(500000);av_seek_frame(G.fmt_ctx,-1,0,AVSEEK_FLAG_BACKWARD);continue;}
