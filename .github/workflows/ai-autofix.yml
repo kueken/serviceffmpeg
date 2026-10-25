@@ -1,4 +1,4 @@
-name: AI Autofix (test branch only)
+name: AI Autofix (test branch only, no PR)
 
 on:
   push:
@@ -6,11 +6,14 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: write          # nur noch zum Pushen auf test nötig
+  # pull-requests: write   # entfernt — der Bot erstellt keine PRs mehr
 
 jobs:
   fix:
+    # Bot-Commits nicht erneut triggern (Sicherheitsnetz zusätzlich zu [skip ci])
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+
     runs-on: ubuntu-latest
     steps:
       - name: Checkout test branch
@@ -36,33 +39,21 @@ jobs:
           python scripts/ai_fix.py
           echo "changed=$(cat /tmp/ai_fix_changed 2>/dev/null || echo 0)" >> "$GITHUB_OUTPUT"
 
-      - name: Commit and push if changed
+      - name: Commit and push to test
         if: steps.fix.outputs.changed != '0'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "chore(ai-autofix): automated code improvements [skip ci]" || echo "nothing to commit"
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore(ai-autofix): automated code improvements [skip ci]"
           git push origin test
 
-      - name: Open / update PR test -> main
-        if: steps.fix.outputs.changed != '0'
-        uses: peter-evans/create-pull-request@v6
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          base: main
-          branch: auto-pr/test-to-main
-          delete-branch: true
-          title: "[Auto] AI-Autofix: test → main"
-          body: |
-            Automatisch erzeugt vom AI-Autofix-Workflow.
-
-            - Quellbranch: `test`
-            - Zielbranch: `main`
-            - Commit: `${{ github.sha }}`
-            - Auslöser: `${{ github.event_name }}` von `${{ github.actor }}`
-
-            **Bitte vor dem Merge prüfen** — der Bot hat Code geändert, ohne zu kompilieren.
-          labels: |
-            automated
-            ai-autofix
+      - name: Summary
+        if: always()
+        run: |
+          echo "changed=$(cat /tmp/ai_fix_changed 2>/dev/null || echo 0)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Lauf abgeschlossen. Kein PR erstellt — manueller Merge nach main bleibt deine Entscheidung." >> "$GITHUB_STEP_SUMMARY"
