@@ -1,0 +1,33 @@
+name: AI Autofix
+on:
+  push:
+    branches: [ test ]
+  workflow_dispatch:        # nur manuell starten – bewusst kein Auto-Trigger
+  # schedule:
+  #   - cron: "0 3 * * 1"   # optional: jeden Montag 03:00
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+
+      - run: pip install requests
+
+      - name: Run AI fixer
+        id: fix
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: python scripts/ai_fix.py
+
+      - name: Open PR
+        if: steps.fix.outcome == 'success'
+        env:
+          GH_TOKEN: $
