@@ -4,7 +4,7 @@ from pathlib import Path
 API = "https://api.deepseek.com/chat/completions"
 KEY = os.environ["DEEPSEEK_API_KEY"]
 TARGETS = ["src"]                      # <-- anpassen
-EXTS = {".py", ".js", ".ts"}           # <-- anpassen
+EXTS = {".py", ".js", ".ts", ".cpp", ".h"}           # <-- anpassen
 MAX_CHARS = 12000                      # pro Datei, Token-Limit
 
 def ask(code: str) -> str:
