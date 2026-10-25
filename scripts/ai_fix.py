@@ -23,7 +23,7 @@ EXCLUDE_FILES = {
     "config.h",           # generiert
     "version.h",          # generiert
 }
-MAX_CHARS = 30000                     # pro Datei; darüber: Datei überspringen
+MAX_CHARS = 80000                     # pro Datei; darüber: Datei überspringen
 MAX_FILES = 40                        # Kostenbremse pro Lauf
 
 SYSTEM_PROMPT = """\
