@@ -38,6 +38,8 @@ AUSGABEFORMAT — strikt einhalten. Für JEDE Änderung ein Block:
 REGELN:
 - Der SEARCH-Block muss EXAKT so in der Datei stehen (inkl. Einrückung).
 - Mehrere Änderungen: mehrere Blöcke hintereinander.
+- Schlage höchstens 3 Änderungen pro Antwort vor.
+- Wenn du mehr findest, beschränke dich auf die wichtigsten 3.
 - KEIN Markdown, KEINE ```-Fences, KEIN Erklärtext.
 - Wenn du nichts findest: antworte exakt mit NO_CHANGES.
 - Ändere keine #include-Reihenfolgen.
