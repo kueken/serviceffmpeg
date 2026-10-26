@@ -457,12 +457,14 @@ bool eServiceFfmpeg::launchPlayer()
         return false;
     }
 
-    m_ipc_fd = accept4(srv_fd, NULL, NULL, SOCK_NONBLOCK);
+    m_ipc_fd = accept(srv_fd, NULL, NULL);
     close(srv_fd);  /* Done with listen socket */
 
     if (m_ipc_fd < 0) { eDebug("[serviceffmpeg] accept() failed: %m"); killPlayer(); return false; }
 
-    /* Make non-blocking for E2 event loop integration */
+    /* Make non-blocking for E2 event loop integration.
+     * Note: accept4() is a GNU extension and requires _GNU_SOURCE.
+     * We use accept() + fcntl() instead — portable and functionally identical. */
     int flags = fcntl(m_ipc_fd, F_GETFL, 0);
     fcntl(m_ipc_fd, F_SETFL, flags | O_NONBLOCK);
 
@@ -927,6 +929,7 @@ RESULT eServiceFfmpeg::seekRelative(int direction, pts_t to)
 {
     int64_t delta_ms = ptsToMs(to) * direction;
     eDebug("[serviceffmpeg] seekRelative %lld ms", (long long)delta_ms);
+    m_last_position += msToPts(delta_ms);
     return ipcSend(SFMP_CMD_SEEK_RELATIVE, json_int("delta_ms", delta_ms)) ? 0 : -1;
 }
 
@@ -1003,8 +1006,9 @@ RESULT eServiceFfmpeg::enableSubtitles(iSubtitleUser *parent, SubtitleTrack &tra
         return -1;
     }
 
-    
-    
+    /* TODO: Bitmap-Subtitles (DVB/PGS) benötigen einen separaten
+     * Overlay-Pfad über VIDEO_SET_CODEC_DATA bzw. den BCM-Subtitle-Stack.
+     * Text-Subtitles (SRT/ASS) laufen bereits über Pango in parseSubtitle(). */
 
     eDebug("[serviceffmpeg] enable subtitles stream_id=%d", stream_id);
     ipcSend(SFMP_CMD_SET_SUBTITLE, json_int("id", stream_id));
