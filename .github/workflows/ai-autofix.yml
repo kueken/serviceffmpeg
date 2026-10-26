@@ -1,4 +1,4 @@
-name: AI Autofix (PR to test)
+name: AI Autofix (matrix, PR to test)
 
 on:
   push:
@@ -10,18 +10,55 @@ permissions:
   pull-requests: write
 
 jobs:
-  fix:
-    # Bot-Commits nicht erneut triggern (Sicherheitsnetz zusätzlich zu [skip ci])
+  # ------------------------------------------------------------------
+  # Job 1: Dateien ermitteln, die bearbeitet werden sollen
+  # ------------------------------------------------------------------
+  detect-files:
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
-
     runs-on: ubuntu-latest
+    outputs:
+      files: ${{ steps.list.outputs.files }}
+      has_files: ${{ steps.list.outputs.has_files }}
     steps:
       - name: Checkout test branch
         uses: actions/checkout@v6
         with:
           ref: test
           fetch-depth: 0
-          persist-credentials: true
+
+      - name: List C/C++ files
+        id: list
+        run: |
+          # Alle .cpp/.c/.h/.hpp/.cc finden, ausschließen was nicht angefasst werden darf
+          FILES=$(find serviceffmpeg -type f \( -name '*.cpp' -o -name '*.c' -o -name '*.h' -o -name '*.hpp' -o -name '*.cc' \) \
+                  ! -name 'bcm_ioctls.h' \
+                  ! -name 'config.h' \
+                  ! -name 'version.h' \
+                  | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+          COUNT=$(echo "$FILES" | jq 'length')
+          echo "has_files=$([ "$COUNT" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "Gefundene Dateien: $COUNT"
+          echo "$FILES" | jq -r '.[]'
+
+  # ------------------------------------------------------------------
+  # Job 2: Jede Datei in einem eigenen Job (Matrix)
+  # ------------------------------------------------------------------
+  process-file:
+    needs: detect-files
+    if: needs.detect-files.outputs.has_files == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        file: ${{ fromJson(needs.detect-files.outputs.files) }}
+      fail-fast: false        # eine Datei darf fehlschlagen, ohne die anderen zu stoppen
+      max-parallel: 4         # Kostenbremse: nicht alle gleichzeitig
+    steps:
+      - name: Checkout test branch
+        uses: actions/checkout@v6
+        with:
+          ref: test
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -29,18 +66,79 @@ jobs:
           python-version: "3.12"
 
       - name: Install deps
-        run: pip install requests
+        run: pip install requests llm-patch-tool
 
-      - name: Run AI fixer
-        id: fix
+      - name: Process ${{ matrix.file }}
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          TARGET_FILE: ${{ matrix.file }}
+        run: python scripts/ai_fix_single.py "$TARGET_FILE"
+
+      - name: Upload result as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ strategy.job-index }}
+          path: |
+            /tmp/ai_fix_result_*.json
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------------
+  # Job 3: Ergebnisse einsammeln und PR erstellen
+  # ------------------------------------------------------------------
+  create-pr:
+    needs: process-file
+    runs-on: ubuntu-latest
+    if: always() && needs.process-file.result != 'skipped'
+    steps:
+      - name: Checkout test branch
+        uses: actions/checkout@v6
+        with:
+          ref: test
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/ai-results
+
+      - name: Apply results and check changes
+        id: apply
         run: |
-          python scripts/ai_fix.py
-          echo "changed=$(cat /tmp/ai_fix_changed 2>/dev/null || echo 0)" >> "$GITHUB_OUTPUT"
+          python3 - <<'PYEOF'
+          import json, glob, os, sys
+          from pathlib import Path
+
+          changed = []
+          for f in glob.glob("/tmp/ai-results/result-*/*.json"):
+              try:
+                  data = json.loads(Path(f).read_text())
+                  if data.get("changed"):
+                      changed.append(data)
+              except Exception:
+                  pass
+
+          if not changed:
+              print("Keine Änderungen.")
+              Path("/tmp/ai_fix_changed").write_text("0")
+              Path("/tmp/ai_fix_summary.md").write_text("## AI-Autofix\n\nKeine Änderungen.\n")
+              sys.exit(0)
+
+          lines = ["## AI-Autofix Änderungen", ""]
+          for c in changed:
+              lines.append(f"- `{c['file']}`: {c.get('summary', 'automated improvements')}")
+          lines.append("")
+          Path("/tmp/ai_fix_summary.md").write_text("\n".join(lines))
+          Path("/tmp/ai_fix_changed").write_text(str(len(changed)))
+          print(f"Geänderte Dateien: {len(changed)}")
+          PYEOF
+          echo "changed=$(cat /tmp/ai_fix_changed)" >> "$GITHUB_OUTPUT"
+          echo "summary<<EOF" >> "$GITHUB_OUTPUT"
+          cat /tmp/ai_fix_summary.md >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Create PR to test
-        if: steps.fix.outputs.changed != '0'
+        if: steps.apply.outputs.changed != '0'
         uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -48,24 +146,11 @@ jobs:
           branch: ai/autofix-${{ github.run_id }}
           delete-branch: true
           title: "[AI] Autofix Vorschlag"
-          body: |
-            Automatisch erzeugt vom AI-Autofix-Workflow.
+          commit-message: |
+            chore(ai-autofix): automated code improvements [skip ci]
 
-            **Bitte prüfen und manuell mergen.** Der Bot hat Code geändert,
-            ohne zu kompilieren.
-
-            - Quellbranch: `test`
-            - Zielbranch: `test`
-            - Lauf-ID: `${{ github.run_id }}`
-            - Auslöser: `${{ github.event_name }}` von `${{ github.actor }}`
+            ${{ steps.apply.outputs.summary }}
+          body-path: /tmp/ai_fix_summary.md
           labels: |
             automated
             ai-autofix
-
-      - name: Summary
-        if: always()
-        run: |
-          echo "changed=$(cat /tmp/ai_fix_changed 2>/dev/null || echo 0)" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Kein direkter Commit auf test — bei Änderungen wurde ein PR erstellt." >> "$GITHUB_STEP_SUMMARY"
-          echo "PR manuell prüfen und mergen." >> "$GITHUB_STEP_SUMMARY"
