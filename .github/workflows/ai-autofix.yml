@@ -21,7 +21,7 @@ jobs:
       has_files: ${{ steps.list.outputs.has_files }}
     steps:
       - name: Checkout test branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: test
           fetch-depth: 0
@@ -55,13 +55,13 @@ jobs:
       max-parallel: 4         # Kostenbremse: nicht alle gleichzeitig
     steps:
       - name: Checkout test branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: test
           fetch-depth: 0
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -76,7 +76,7 @@ jobs:
 
       - name: Upload result as artifact
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: result-${{ strategy.job-index }}
           path: |
@@ -92,13 +92,13 @@ jobs:
     if: always() && needs.process-file.result != 'skipped'
     steps:
       - name: Checkout test branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: test
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           path: /tmp/ai-results
 
