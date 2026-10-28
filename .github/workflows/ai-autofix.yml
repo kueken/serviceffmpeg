@@ -5,9 +5,17 @@ name: AI Autofix
 # Der Branch "ai/autofix" wird nach Merge ODER Schließen automatisch gelöscht
 # (siehe ai-autofix-cleanup.yml).
 #
-# Kein push-Trigger -> keine Endlosschleife durch den eigenen Merge.
+# push-Trigger NUR für die Testphase auf "test": startet nur, wenn Workflow oder Skript
+# selbst geändert werden. Der Merge des Bot-PRs ändert nur serviceffmpeg/** und löst
+# daher keinen neuen Lauf aus (keine Endlosschleife). Nach dem Übertrag nach main kann
+# der push-Block entfernt werden.
 
 on:
+  push:
+    branches: [test]
+    paths:
+      - ".github/workflows/ai-autofix.yml"
+      - "scripts/ai_fix_single.py"
   workflow_dispatch:
     inputs:
       reference_repo:
@@ -63,7 +71,7 @@ jobs:
       - name: List C/C++ files
         id: list
         env:
-          MAX_FILES: ${{ inputs.max_files || '60' }}
+          MAX_FILES: ${{ inputs.max_files || (github.event_name == 'push' && '5' || '60') }}
         run: |
           FILES=$(find "$SOURCE_DIR" -type f \
                     \( -name '*.cpp' -o -name '*.c' -o -name '*.h' -o -name '*.hpp' -o -name '*.cc' \) \
