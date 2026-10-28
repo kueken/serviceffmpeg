@@ -1,0 +1,26 @@
+name: AI Autofix Cleanup
+
+# Löscht den Bot-Branch, sobald der PR gemergt ODER geschlossen wurde.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+
+jobs:
+  delete-branch:
+    if: >-
+      startsWith(github.event.pull_request.head.ref, 'ai/autofix') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Delete branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/${BRANCH}" \
+            && echo "Branch ${BRANCH} gelöscht" \
+            || echo "Branch ${BRANCH} existierte nicht mehr"
