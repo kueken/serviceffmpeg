@@ -24,7 +24,9 @@ Umgebungsvariablen:
   AI_FIX_REF_MAP     JSON-Mapping Ziel-Datei -> Referenz-Datei(en), für abweichende
                      Strukturen/Dateinamen (Keys dürfen Glob-Muster sein)
   AI_FIX_VERIFY      1 (Default) = zweite Review-Runde, 0 = aus
-  AI_FIX_MAX_CHARS   max. Zeichen pro Datei (Default 60000)
+  AI_FIX_MAX_CHARS   harte Obergrenze Zeichen pro Datei (Default 300000)
+  AI_FIX_CHUNK_CHARS Abschnittsgröße bei großen Dateien (Default 40000);
+                     größere Dateien werden an Funktionsgrenzen geteilt
   AI_FIX_RESULT_DIR  Ausgabeordner (Default /tmp)
 
 Exit-Code: 0 (auch bei API-Fehlern; Status steht im Result-JSON),
@@ -57,7 +59,10 @@ REF_SUBDIR = os.environ.get("AI_FIX_REF_SUBDIR", "").strip().strip("/")
 REF_MAP = os.environ.get("AI_FIX_REF_MAP", "").strip()
 RESULT_DIR = Path(os.environ.get("AI_FIX_RESULT_DIR", "/tmp"))
 
-MAX_CHARS = int(os.environ.get("AI_FIX_MAX_CHARS", "60000"))
+MAX_CHARS = int(os.environ.get("AI_FIX_MAX_CHARS", "300000"))
+CHUNK_CHARS = int(os.environ.get("AI_FIX_CHUNK_CHARS", "40000"))
+HEAD_CHARS = 3000        # Dateikopf (Includes/Typen) als Kontext für jeden Abschnitt
+MAX_TOTAL_CHANGES = 24   # pro Datei über alle Abschnitte
 REF_MAX_CHARS = int(os.environ.get("AI_FIX_REF_MAX_CHARS", "40000"))
 MAX_CHANGES = 8          # Änderungen pro Datei
 MAX_CHANGE_LINES = 40    # größte erlaubte Einzeländerung (Zeilen)
@@ -307,8 +312,19 @@ def find_references(rel: str):
 # ---------------------------------------------------------------------------
 # Vorschlag, Prüfung, Review, Anwendung
 # ---------------------------------------------------------------------------
-def propose(rel: str, code: str, refs: list) -> list:
-    parts = [f'<ziel pfad="{rel}">\n{code}\n</ziel>']
+def propose(rel: str, code: str, refs: list, part=None) -> list:
+    if part:
+        idx, total, a, b, head = part
+        parts = [
+            f'<dateikopf pfad="{rel}">\n{head}\n</dateikopf>',
+            f'<ziel pfad="{rel}" abschnitt="{idx}/{total}" zeilen="{a}-{b}">\n{code}\n</ziel>',
+            f"Hinweis: <ziel> ist nur Abschnitt {idx} von {total} einer großen Datei "
+            "(<dateikopf> ist der Dateianfang als Kontext). Ändere ausschließlich Code innerhalb "
+            "von <ziel>; `search` muss vollständig aus <ziel> stammen. Was in anderen Abschnitten "
+            "definiert ist, kennst du nicht – melde dort keine Fehler.",
+        ]
+    else:
+        parts = [f'<ziel pfad="{rel}">\n{code}\n</ziel>']
     if refs:
         for ref_path, ref_text in refs:
             parts.append(f'<referenz pfad="{ref_path}">\n{ref_text}\n</referenz>')
@@ -388,6 +404,52 @@ def apply_changes(code: str, changes: list):
         applied.append(c)
     return new, applied, skipped
 
+def split_chunks(code: str):
+    """Teilt an Funktionsenden (Zeile beginnt mit '}'), Notfalls an Leerzeilen."""
+    lines = code.split("\n")
+    chunks, cur, size, start = [], [], 0, 1
+    for no, ln in enumerate(lines, 1):
+        cur.append(ln)
+        size += len(ln) + 1
+        soft = size >= CHUNK_CHARS and ln.startswith("}")
+        hard = size >= CHUNK_CHARS * 1.4 and ln.strip() == ""
+        if soft or hard:
+            chunks.append((start, no, "\n".join(cur)))
+            cur, size, start = [], 0, no + 1
+    if cur:
+        chunks.append((start, len(lines), "\n".join(cur)))
+    return chunks
+
+
+def analyze(rel: str, code: str, refs: list):
+    """Vorschlag + lokale Prüfung + Review, bei großen Dateien abschnittsweise."""
+    if len(code) > CHUNK_CHARS * 1.4:
+        chunks = split_chunks(code)
+    else:
+        chunks = [(1, code.count("\n") + 1, code)]
+    head = "\n".join(code.split("\n")[:80])[:HEAD_CHARS]
+
+    all_valid, all_skipped, seen, next_id = [], [], set(), 1
+    for idx, (a, b, text) in enumerate(chunks, 1):
+        part = None
+        if len(chunks) > 1:
+            print(f"  Abschnitt {idx}/{len(chunks)} (Zeilen {a}-{b}, {len(text)} Zeichen)")
+            part = (idx, len(chunks), a, b, head)
+        proposed = propose(rel, text, refs, part)
+        valid, skipped = prevalidate(code, proposed)
+        valid = [c for c in valid if c["search"] not in seen]
+        if valid and VERIFY:
+            valid, dropped = verify(rel, text, valid)
+            skipped += dropped
+        for c in valid:
+            seen.add(c["search"])
+            c["id"] = next_id
+            next_id += 1
+        all_valid += valid
+        all_skipped += skipped
+    return all_valid[:MAX_TOTAL_CHANGES], all_skipped
+
+
 # ---------------------------------------------------------------------------
 # Ergebnis
 # ---------------------------------------------------------------------------
@@ -441,11 +503,7 @@ def main() -> int:
         print(f"  Vergleich mit Referenz: {ref_rel}")
 
     try:
-        proposed = propose(rel, code, refs)
-        valid, skipped = prevalidate(code, proposed)
-        if valid and VERIFY:
-            valid, dropped = verify(rel, code, valid)
-            skipped += dropped
+        valid, skipped = analyze(rel, code, refs)
     except Exception as e:  # noqa: BLE001
         print(f"  Fehler: {e}")
         write_result(rel, error=str(e)[:500], summary="API-/Parse-Fehler", reference=ref_rel)

@@ -92,7 +92,7 @@ jobs:
     needs: detect-files
     if: needs.detect-files.outputs.has_files == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -172,14 +172,17 @@ jobs:
           import glob, json, os, subprocess
           from pathlib import Path
 
-          applied, failed, notes = [], [], []
+          applied, failed, notes, rows = [], [], [], []
           for f in sorted(glob.glob("/tmp/ai-results/*/ai_fix_result_*.json")):
               try:
                   d = json.loads(Path(f).read_text(encoding="utf-8"))
               except Exception:
                   continue
+              status = d.get("summary") or "-"
               if d.get("error"):
                   notes.append(f"- `{d['file']}`: Fehler – {d['error']}")
+                  status = "Fehler: " + d["error"][:120]
+              rows.append((d["file"], "geändert" if d.get("changed") else "keine Änderung", status))
               if not d.get("changed") or not d.get("patch"):
                   continue
               chk = subprocess.run(["git", "apply", "--check", "--whitespace=nowarn", "-"],
@@ -209,6 +212,14 @@ jobs:
                     "In beiden Fällen wird der Branch `ai/autofix` automatisch gelöscht."]
 
           Path("/tmp/ai_fix_body.md").write_text("\n".join(lines), encoding="utf-8")
+
+          # Übersicht über ALLE Dateien im Job-Summary (sichtbar auch ohne PR)
+          summ = ["## AI-Autofix – Übersicht", "", "| Datei | Ergebnis | Details |", "|---|---|---|"]
+          for fn, res, det in rows:
+              summ.append(f"| `{fn}` | {res} | {det.replace('|', '/')} |")
+          if os.environ.get("GITHUB_STEP_SUMMARY"):
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as sf:
+                  sf.write("\n".join(summ) + "\n")
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write(f"changed={len(applied)}\n")
           print(f"Geänderte Dateien: {len(applied)}, nicht anwendbar: {len(failed)}")
