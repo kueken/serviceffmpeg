@@ -432,13 +432,14 @@ static void h264_prepare_codec_data(const uint8_t *extra, int extra_size)
     /* SPS */
     uint16_t sps_len=(extra[6]<<8)|extra[7];
     if(extra_size<8+(int)sps_len) return;
+    if(4+(uint32_t)sps_len>sizeof(tmp)) return;
     memcpy(tmp+tmp_len,sc,4);tmp_len+=4;
     memcpy(tmp+tmp_len,extra+8,sps_len);tmp_len+=sps_len;
     /* PPS */
     int pp=8+sps_len;
     if(extra_size>pp+2){
         uint16_t pps_len=(extra[pp+1]<<8)|extra[pp+2]; pp+=3;
-        if(extra_size>=pp+(int)pps_len){
+        if(extra_size>=pp+(int)pps_len && tmp_len+4+(uint32_t)pps_len<=sizeof(tmp)){
             memcpy(tmp+tmp_len,sc,4);tmp_len+=4;
             memcpy(tmp+tmp_len,extra+pp,pps_len);tmp_len+=pps_len;
         }
@@ -473,7 +474,7 @@ static bool write_video_h264(int fd, const uint8_t *data, int size,
                 }
             }
         }
-        struct iovec iov[3]; int ic=0;
+        struct iovec iov[4]; int ic=0;
         iov[ic].iov_base=PesHeader;
         iov[ic++].iov_len=InsertPesHeader(PesHeader,-1,MPEG_VIDEO_PES_START_CODE,pts,fake_sc);
         if(g_h264.initialHeader&&!g_h264.sps_pps_in_stream&&g_h264.codecData){
@@ -701,7 +702,7 @@ static bool write_video_vc1(int fd, const uint8_t *data, int size,
                              uint64_t pts, const uint8_t *extra, int extra_size)
 {
     if(fd<0||!data||size<=0) return false;
-    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 4];
+    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 8];
     struct iovec iov[5]; int ic=0;
     uint32_t PacketLength = 0;
 
@@ -772,7 +773,7 @@ static bool write_video_wmv(int fd, const uint8_t *data, int size,
                              int width, int height)
 {
     if(fd<0||!data||size<=0) return false;
-    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 4];
+    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 8];
     struct iovec iov[5]; int ic=0;
     uint32_t PacketLength = 0;
 
@@ -834,7 +835,7 @@ static bool write_video_vp(int fd, const uint8_t *data, int size,
                             uint64_t pts, bool is_vp6, bool is_vp9)
 {
     if(fd<0||!data||size<=0) return false;
-    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 16]; /* extra space for BCMV+len+flag */
+    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 32]; /* extra space for BCMV+len+flag */
     struct iovec iov[2];
 
     /* For VP9 on Vuplus: zero the PTS (we are STB_OTHER, so use normal pts) */
@@ -882,7 +883,7 @@ static bool write_video_generic(int fd, const uint8_t *data, int size,
 {
     if(fd<0||!data||size<=0) return false;
     uint8_t PesHeader[PES_MAX_HEADER_SIZE];
-    struct iovec iov[3]; int ic=0;
+    struct iovec iov[4]; int ic=0;
     iov[ic].iov_base=PesHeader; iov[ic++].iov_len=0;
     int payload=size;
     if(g_mpeg4_initial_header&&extra&&extra_size>0){
@@ -904,7 +905,7 @@ static bool write_audio_aac(int fd, const uint8_t *data, int size, uint64_t pts)
     uint8_t PesHeader[PES_MAX_HEADER_SIZE];
     /* Check if source already has ADTS sync word (0xFFF?) */
     bool has_adts = (size>1) && (data[0]==0xFF) && ((data[1]&0xF0)==0xF0);
-    struct iovec iov[3]; int ic=0;
+    struct iovec iov[4]; int ic=0;
     iov[ic].iov_base=PesHeader; iov[ic++].iov_len=0;
     int payload=size;
     if(!has_adts)
@@ -1207,7 +1208,10 @@ static bool open_input()
         ipc_send_error(1,"open failed: "+std::string(eb));
         avformat_free_context(G.fmt_ctx);G.fmt_ctx=NULL;return false;}
 
-    avformat_find_stream_info(G.fmt_ctx,NULL);
+    ret=avformat_find_stream_info(G.fmt_ctx,NULL);
+    if(ret<0){char eb[256];av_strerror(ret,eb,sizeof(eb));
+        ipc_send_error(1,"stream info failed: "+std::string(eb));
+        avformat_close_input(&G.fmt_ctx);G.fmt_ctx=NULL;return false;}
     if(G.fmt_ctx->duration>0) G.duration_ms=G.fmt_ctx->duration/1000;
     G.is_live=(G.fmt_ctx->duration<=0||!G.fmt_ctx->pb||
                (G.fmt_ctx->ctx_flags&AVFMTCTX_NOHEADER));
@@ -1310,7 +1314,7 @@ static bool start_recording(const std::string &path)
            s->codecpar->codec_type!=AVMEDIA_TYPE_AUDIO) continue;
         AVStream *os=avformat_new_stream(G.record_ctx,NULL);
         if(!os)continue;
-        avcodec_parameters_copy(os->codecpar,s->codecpar);
+        if(avcodec_parameters_copy(os->codecpar,s->codecpar)<0)continue;
         os->codecpar->codec_tag=0;os->time_base=s->time_base;
     }
     if(!(G.record_ctx->oformat->flags&AVFMT_NOFILE))
@@ -1336,6 +1340,7 @@ static void stop_recording()
 
 static void process_packet(AVPacket *pkt)
 {
+    if(!G.fmt_ctx||pkt->stream_index<0||(unsigned)pkt->stream_index>=G.fmt_ctx->nb_streams)return;
     AVStream *st=G.fmt_ctx->streams[pkt->stream_index];
     /* pts in 90kHz Ticks — INVALID_PTS_VALUE wenn unbekannt */
     uint64_t pts90=INVALID_PTS_VALUE;
@@ -1362,7 +1367,8 @@ static void process_packet(AVPacket *pkt)
             for(unsigned oi=0;oi<G.record_ctx->nb_streams;oi++)
                 if(G.record_ctx->streams[oi]->codecpar->codec_id==
                    G.fmt_ctx->streams[pkt->stream_index]->codecpar->codec_id){
-                    AVPacket op; av_packet_ref(&op,pkt);
+                    AVPacket op;
+                    if(av_packet_ref(&op,pkt)<0) break;
                     op.stream_index=oi;
                     av_packet_rescale_ts(&op,
                         G.fmt_ctx->streams[pkt->stream_index]->time_base,
@@ -1403,6 +1409,7 @@ static void handle_command(const std::string &cmd, const std::string &payload)
         int id=(int)json_get_int(payload,"id");
         for(size_t i=0;i<G.audio_tracks.size();i++){
             if(G.audio_tracks[i].stream_idx!=id)continue;
+            if(id<0||(unsigned)id>=G.fmt_ctx->nb_streams)break;
             if(G.audio_stream_idx>=0)G.fmt_ctx->streams[G.audio_stream_idx]->discard=AVDISCARD_ALL;
             G.audio_stream_idx=id;G.active_audio_track=(int)i;
             G.fmt_ctx->streams[id]->discard=AVDISCARD_DEFAULT;
@@ -1412,7 +1419,7 @@ static void handle_command(const std::string &cmd, const std::string &payload)
     } else if(cmd=="set_subtitle"){
         int id=(int)json_get_int(payload,"id");
         if(id<0){if(G.sub_stream_idx>=0)G.fmt_ctx->streams[G.sub_stream_idx]->discard=AVDISCARD_ALL;G.sub_stream_idx=-1;}
-        else{if(G.sub_stream_idx>=0)G.fmt_ctx->streams[G.sub_stream_idx]->discard=AVDISCARD_ALL;
+        else if((unsigned)id<G.fmt_ctx->nb_streams){if(G.sub_stream_idx>=0)G.fmt_ctx->streams[G.sub_stream_idx]->discard=AVDISCARD_ALL;
              G.sub_stream_idx=id;G.fmt_ctx->streams[id]->discard=AVDISCARD_DEFAULT;}
     } else if(cmd=="set_ua"){G.useragent=json_get_str(payload,"ua");
     } else if(cmd=="set_headers"){G.extra_headers=json_get_str(payload,"headers");
@@ -1488,7 +1495,9 @@ static void playback_loop()
         if(ret==AVERROR(EAGAIN)){poll_ipc();usleep(5000);continue;}
         if(ret<0){
             char eb[256];av_strerror(ret,eb,sizeof(eb));
-            if(G.is_live){usleep(500000);av_seek_frame(G.fmt_ctx,-1,0,AVSEEK_FLAG_BACKWARD);continue;}
+            if(G.is_live){usleep(500000);
+                if(av_seek_frame(G.fmt_ctx,-1,0,AVSEEK_FLAG_BACKWARD)<0){ipc_send_error(4,eb);break;}
+                continue;}
             ipc_send_error(4,eb);break;
         }
 

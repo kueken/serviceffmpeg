@@ -466,6 +466,7 @@ bool eServiceFfmpeg::launchPlayer()
      * Note: accept4() is a GNU extension and requires _GNU_SOURCE.
      * We use accept() + fcntl() instead — portable and functionally identical. */
     int flags = fcntl(m_ipc_fd, F_GETFL, 0);
+    if (flags < 0) flags = 0;
     fcntl(m_ipc_fd, F_SETFL, flags | O_NONBLOCK);
 
     /* Register socket notifier so E2 calls ipcReceive() when data arrives */
@@ -528,13 +529,25 @@ bool eServiceFfmpeg::ipcSend(const std::string &cmd, const std::string &params)
     msg += "}\n";
 
     ssize_t sent = write(m_ipc_fd, msg.c_str(), msg.length());
-    if (sent < 0) { eDebug("[serviceffmpeg] ipcSend write error: %m"); return false; }
+    if (sent < 0)
+    {
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+            return false;
+        eDebug("[serviceffmpeg] ipcSend write error: %m");
+        return false;
+    }
+    if ((size_t)sent != msg.length())
+    {
+        eDebug("[serviceffmpeg] ipcSend short write %zd/%zu", sent, msg.length());
+        return false;
+    }
     return true;
 }
 
 void eServiceFfmpeg::ipcReceive(int)
 {
     /* Read available data into line buffer */
+    if (m_ipc_fd < 0) return;
     char buf[4096];
     ssize_t n = read(m_ipc_fd, buf, sizeof(buf) - 1);
     if (n <= 0)
