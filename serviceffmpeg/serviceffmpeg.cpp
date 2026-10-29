@@ -243,12 +243,9 @@ eServiceFactoryFfmpeg::eServiceFactoryFfmpeg()
         sc->addServiceFactory(eServiceFactoryFfmpeg::id, this, ext);
     }
     m_service_info = new eStaticServiceFfmpegInfo();
-        eDebug("[serviceffmpeg] registered, replacing servicemp3");
-    }
-    else
-    {
-        eDebug("[serviceffmpeg] ERROR: ServiceCenter unavailable");
-    }
+    eDebug("[serviceffmpeg] registered, replacing servicemp3");
+}
+
 eServiceFactoryFfmpeg::~eServiceFactoryFfmpeg()
 {
     ePtr<eServiceCenter> sc;
