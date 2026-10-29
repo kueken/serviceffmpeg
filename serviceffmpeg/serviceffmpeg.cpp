@@ -241,14 +241,13 @@ eServiceFactoryFfmpeg::eServiceFactoryFfmpeg()
         /* Replace servicemp3 (0x1001) as the default handler */
         sc->removeServiceFactory(0x1001);
         sc->addServiceFactory(eServiceFactoryFfmpeg::id, this, ext);
-
+    }
         eDebug("[serviceffmpeg] registered, replacing servicemp3");
     }
     else
     {
         eDebug("[serviceffmpeg] ERROR: ServiceCenter unavailable");
     }
-
     m_service_info = new eStaticServiceFfmpegInfo();
 
 eServiceFactoryFfmpeg::~eServiceFactoryFfmpeg()
