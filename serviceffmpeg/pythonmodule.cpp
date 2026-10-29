@@ -1,33 +1,18 @@
+```cpp
 /*
  * pythonmodule.cpp
  *
  * Python-Modul-Einstieg für serviceffmpeg.so
  *
- * ROOT CAUSE (aus Debuglog analysiert):
- *   eAutoInitPtr<eServiceFactoryFfmpeg> in serviceffmpeg.cpp wird
- *   ausgeführt wenn die .so geladen wird. Zu diesem Zeitpunkt
- *   (Python Autostart, nach E2-Mainloop-Start) ist eServiceCenter
- *   verfügbar — der Konstruktor SOLLTE funktionieren.
- *
- *   ABER: Im Log fehlt "[serviceffmpeg] registered, replacing servicemp3".
- *   Das bedeutet: der eAutoInitPtr-Konstruktor läuft NICHT oder
- *   eServiceCenter::getPrivInstance() liefert NULL.
- *
- *   Grund: eAutoInitPtr verwendet einen eigenen Init-Mechanismus
- *   der nur beim Programmstart (vor dem Mainloop) aktiv ist.
- *   Wird die .so später geladen, constructed er das Objekt NICHT
- *   automatisch — erst beim ersten Zugriff (lazy init).
- *
- * FIX:
- *   In PyInit_serviceffmpeg() eine statische Factory-Instanz anlegen.
- *   Diese hält die Referenz für die gesamte Laufzeit und registriert
- *   sich im Konstruktor in eServiceCenter.
+ * Die Service-Factory wird explizit in PyInit_serviceffmpeg()
+ * erzeugt und über s_factory während der Laufzeit gehalten.
  */
 
 #include "serviceffmpeg.h"
 #include <Python.h>
+#include <new>
 
-/* Statische Instanz — hält die Factory am Leben für die Laufzeit der .so */
+/* Hält die Factory am Leben, solange das Modul geladen ist. */
 static ePtr<eServiceFactoryFfmpeg> s_factory;
 
 static PyMethodDef serviceffmpegMethods[] =
@@ -42,67 +27,38 @@ static struct PyModuleDef moduledef =
     "Module for serviceffmpeg",
     -1,
     serviceffmpegMethods,
-    NULL, NULL, NULL, NULL
+    NULL,
+    NULL,
+    NULL,
+    NULL
 };
 
 PyMODINIT_FUNC PyInit_serviceffmpeg(void)
 {
-    PyObject *module = NULL;
-    PyObject *methods = NULL;
+    /* Zuerst das Python-Modul erzeugen. */
+    PyObject *module = PyModule_Create(&moduledef);
+    if (!module)
+        return NULL;
+
     /*
-     * Factory explizit instanziieren.
-     * Der Konstruktor von eServiceFactoryFfmpeg ruft addServiceFactory()
-     * auf — zu diesem Zeitpunkt läuft der E2-Mainloop und
-     * eServiceCenter ist garantiert verfügbar.
-     *
-     * s_factory hält die Referenz (via ePtr<>) für die gesamte
-     * Laufzeit der .so — verhindert vorzeitige Destruktion.
+     * Factory explizit erzeugen.
+     * s_factory hält die Referenz über ePtr.
      */
     if (!s_factory)
     {
-        eServiceFactoryFfmpeg *factory = new (std::nothrow) eServiceFactoryFfmpeg();
+        eServiceFactoryFfmpeg *factory =
+            new (std::nothrow) eServiceFactoryFfmpeg();
+
         if (!factory)
         {
+            Py_DECREF(module);
             PyErr_NoMemory();
             return NULL;
         }
+
         s_factory = factory;
-        /* Konstruktor hat bereits eDebug ausgegeben wenn erfolgreich */
-    }
-
-    methods = PyCapsule_New(NULL, NULL, NULL);
-    if (!methods)
-    {
-        s_factory.reset();
-        return NULL;
-    }
-    Py_DECREF(methods);
-
-    module = PyModule_Create(&moduledef);
-    if (!module)
-    {
-        s_factory.reset();
-        return NULL;
     }
 
     return module;
 }
 
-/*
- * HINWEIS für serviceffmpeg.cpp:
- * ================================
- * Die letzten zwei Zeilen in serviceffmpeg.cpp:
- *
- *   eAutoInitPtr<eServiceFactoryFfmpeg> init_eServiceFactoryFfmpeg(
- *       eAutoInitNumbers::service + 1, "eServiceFactoryFfmpeg");
- *
- * ENTFERNEN oder ersetzen durch:
- *
- *   // Factory wird durch PyInit_serviceffmpeg() in pythonmodule.cpp registriert
- *
- * Grund: eAutoInitPtr konstruiert das Objekt entweder zu früh (kein eServiceCenter)
- * oder zu spät (nach dem eInit-Lauf ohne Log-Eintrag). In beiden Fällen ist das
- * Ergebnis unzuverlässig für dynamisch geladene .so Plugins.
- * Die explizite Registrierung in PyInit_serviceffmpeg() ist die korrekte Methode
- * für Python-Plugin-gebundene C++ Service-Factories in Enigma2.
- */
