@@ -1,4 +1,3 @@
-```cpp
 /*
  * pythonmodule.cpp
  *
@@ -61,4 +60,3 @@ PyMODINIT_FUNC PyInit_serviceffmpeg(void)
 
     return module;
 }
-
