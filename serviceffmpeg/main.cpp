@@ -838,7 +838,6 @@ static bool write_video_vp(int fd, const uint8_t *data, int size,
 {
     if(fd<0||!data||size<=0) return false;
     uint8_t PesHeader[PES_MAX_HEADER_SIZE + 32]; /* extra space for BCMV+len+flag */
-    struct iovec iov[2];
 
     /* For VP9 on Vuplus: zero the PTS (we are STB_OTHER, so use normal pts) */
     uint64_t use_pts = pts;
@@ -862,11 +861,6 @@ static bool write_video_vp(int fd, const uint8_t *data, int size,
 
     int32_t payload_len = size + pes_hdr_len - 6;
     UpdatePesHeaderPayloadSize(PesHeader, payload_len);
-
-    iov[0].iov_base = PesHeader;
-    iov[0].iov_len  = pes_hdr_len;
-    iov[1].iov_base = (void*)data;
-    iov[1].iov_len  = size;
 
     /* Write header separately, then data — matches vp.c for non-Vuplus */
     if(write_retry(fd, PesHeader, pes_hdr_len) < 0) return false;
@@ -1423,18 +1417,32 @@ static void handle_command(const std::string &cmd, const std::string &payload)
         }
     } else if(cmd=="set_subtitle"){
         int id=(int)json_get_int(payload,"id");
-        if(!G.fmt_ctx)break;
-        if(id<0){if(G.sub_stream_idx>=0)G.fmt_ctx->streams[G.sub_stream_idx]->discard=AVDISCARD_ALL;G.sub_stream_idx=-1;}
-        else if((unsigned)id<G.fmt_ctx->nb_streams){if(G.sub_stream_idx>=0)G.fmt_ctx->streams[G.sub_stream_idx]->discard=AVDISCARD_ALL;
-             G.sub_stream_idx=id;G.fmt_ctx->streams[id]->discard=AVDISCARD_DEFAULT;}
-    } else if(cmd=="set_ua"){G.useragent=json_get_str(payload,"ua");
-    } else if(cmd=="set_headers"){G.extra_headers=json_get_str(payload,"headers");
-    } else if(cmd=="record_start"){start_recording(json_get_str(payload,"path"));
-    } else if(cmd=="record_stop"){stop_recording();
-    } else if(cmd=="set_bufsize"){G.buffer_size=(int)json_get_int(payload,"bytes");
-    } else if(cmd=="get_info"){if(G.fmt_ctx)send_track_info();}
+        if(!G.fmt_ctx) return;                    /* war: break; */
+        if(id<0){
+            if(G.sub_stream_idx>=0)
+                G.fmt_ctx->streams[G.sub_stream_idx]->discard=AVDISCARD_ALL;
+            G.sub_stream_idx=-1;
+        }
+        else if((unsigned)id<G.fmt_ctx->nb_streams){
+            if(G.sub_stream_idx>=0)
+                G.fmt_ctx->streams[G.sub_stream_idx]->discard=AVDISCARD_ALL;
+            G.sub_stream_idx=id;
+            G.fmt_ctx->streams[id]->discard=AVDISCARD_DEFAULT;
+        }
+    } else if(cmd=="set_ua"){
+        G.useragent=json_get_str(payload,"ua");
+    } else if(cmd=="set_headers"){
+        G.extra_headers=json_get_str(payload,"headers");
+    } else if(cmd=="record_start"){
+        start_recording(json_get_str(payload,"path"));
+    } else if(cmd=="record_stop"){
+        stop_recording();
+    } else if(cmd=="set_bufsize"){
+        G.buffer_size=(int)json_get_int(payload,"bytes");
+    } else if(cmd=="get_info"){
+        if(G.fmt_ctx)send_track_info();
+    }
 }
-
 static void poll_ipc()
 {
     if(G.ipc_fd<0) return;
