@@ -85,6 +85,7 @@ static long long json_get_int(const std::string &json, const std::string &key)
     size_t pos = json.find(needle);
     if (pos == std::string::npos) return 0;
     pos += needle.length();
+    if (pos >= json.size()) return 0;
     return strtoll(json.c_str() + pos, NULL, 10);
 }
 
@@ -561,6 +562,12 @@ void eServiceFfmpeg::ipcReceive(int)
     }
     buf[n] = 0;
     m_ipc_recv_buf += buf;
+    if (m_ipc_recv_buf.size() > 1024 * 1024)
+    {
+        eDebug("[serviceffmpeg] IPC line buffer overflow, dropping");
+        m_ipc_recv_buf.clear();
+        return;
+    }
 
     /* Process complete lines */
     size_t pos;
@@ -1006,7 +1013,7 @@ RESULT eServiceFfmpeg::enableSubtitles(iSubtitleUser *parent, SubtitleTrack &tra
     for (size_t i = 0; i < m_stream_info.sub_tracks.size(); i++)
     {
         if (m_stream_info.sub_tracks[i].language == track.language_code ||
-            (int)i == track.pid)
+            m_stream_info.sub_tracks[i].id == track.pid)
         {
             stream_id = m_stream_info.sub_tracks[i].id;
             m_current_sub_track = (int)i;

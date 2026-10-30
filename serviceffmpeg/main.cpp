@@ -432,12 +432,12 @@ static void h264_prepare_codec_data(const uint8_t *extra, int extra_size)
     /* SPS */
     uint16_t sps_len=(extra[6]<<8)|extra[7];
     if(extra_size<8+(int)sps_len) return;
-    if(4+(uint32_t)sps_len>sizeof(tmp)) return;
+    if(tmp_len+4+(uint32_t)sps_len>sizeof(tmp)) return;
     memcpy(tmp+tmp_len,sc,4);tmp_len+=4;
     memcpy(tmp+tmp_len,extra+8,sps_len);tmp_len+=sps_len;
     /* PPS */
     int pp=8+sps_len;
-    if(extra_size>pp+2){
+    if(extra_size>=pp+3){
         uint16_t pps_len=(extra[pp+1]<<8)|extra[pp+2]; pp+=3;
         if(extra_size>=pp+(int)pps_len && tmp_len+4+(uint32_t)pps_len<=sizeof(tmp)){
             memcpy(tmp+tmp_len,sc,4);tmp_len+=4;
@@ -448,6 +448,7 @@ static void h264_prepare_codec_data(const uint8_t *extra, int extra_size)
     g_h264.codecData=(uint8_t*)malloc(tmp_len);
     g_h264.codecDataLen=tmp_len;
     if(g_h264.codecData) memcpy(g_h264.codecData,tmp,tmp_len);
+    else g_h264.codecDataLen=0;
 }
 
 static bool write_video_h264(int fd, const uint8_t *data, int size,
@@ -617,6 +618,7 @@ static void h265_prepare_codec_data(const uint8_t *extra, int extra_size)
     g_h265.codecData=(uint8_t*)malloc(tmp_len);
     g_h265.codecDataLen=tmp_len;
     if(g_h265.codecData) memcpy(g_h265.codecData,tmp,tmp_len);
+    else g_h265.codecDataLen=0;
 }
 
 static bool write_video_h265(int fd, const uint8_t *data, int size,
@@ -1202,11 +1204,13 @@ static bool open_input()
 
     G.fmt_ctx=avformat_alloc_context();
     if(!G.fmt_ctx){ipc_send_error(1,"alloc failed");return false;}
-    int ret=avformat_open_input(&G.fmt_ctx,G.uri.c_str(),NULL,&opts);
+    AVFormatContext *open_ctx=G.fmt_ctx;
+    int ret=avformat_open_input(&open_ctx,G.uri.c_str(),NULL,&opts);
+    G.fmt_ctx=open_ctx;
     av_dict_free(&opts);
     if(ret<0){char eb[256];av_strerror(ret,eb,sizeof(eb));
         ipc_send_error(1,"open failed: "+std::string(eb));
-        avformat_free_context(G.fmt_ctx);G.fmt_ctx=NULL;return false;}
+        G.fmt_ctx=NULL;return false;}
 
     ret=avformat_find_stream_info(G.fmt_ctx,NULL);
     if(ret<0){char eb[256];av_strerror(ret,eb,sizeof(eb));
@@ -1313,7 +1317,7 @@ static bool start_recording(const std::string &path)
         if(s->codecpar->codec_type!=AVMEDIA_TYPE_VIDEO&&
            s->codecpar->codec_type!=AVMEDIA_TYPE_AUDIO) continue;
         AVStream *os=avformat_new_stream(G.record_ctx,NULL);
-        if(!os)continue;
+        if(!os||!os->codecpar)continue;
         if(avcodec_parameters_copy(os->codecpar,s->codecpar)<0)continue;
         os->codecpar->codec_tag=0;os->time_base=s->time_base;
     }
@@ -1322,7 +1326,8 @@ static bool start_recording(const std::string &path)
             avformat_free_context(G.record_ctx);G.record_ctx=NULL;
             pthread_mutex_unlock(&G.record_mutex);return false;}
     if(avformat_write_header(G.record_ctx,NULL)<0){
-        avio_closep(&G.record_ctx->pb);avformat_free_context(G.record_ctx);
+        if(G.record_ctx->pb)avio_closep(&G.record_ctx->pb);
+        avformat_free_context(G.record_ctx);
         G.record_ctx=NULL;pthread_mutex_unlock(&G.record_mutex);return false;}
     G.recording=true;pthread_mutex_unlock(&G.record_mutex);return true;
 }
@@ -1409,7 +1414,7 @@ static void handle_command(const std::string &cmd, const std::string &payload)
         int id=(int)json_get_int(payload,"id");
         for(size_t i=0;i<G.audio_tracks.size();i++){
             if(G.audio_tracks[i].stream_idx!=id)continue;
-            if(id<0||(unsigned)id>=G.fmt_ctx->nb_streams)break;
+            if(id<0||!G.fmt_ctx||(unsigned)id>=G.fmt_ctx->nb_streams)break;
             if(G.audio_stream_idx>=0)G.fmt_ctx->streams[G.audio_stream_idx]->discard=AVDISCARD_ALL;
             G.audio_stream_idx=id;G.active_audio_track=(int)i;
             G.fmt_ctx->streams[id]->discard=AVDISCARD_DEFAULT;
@@ -1418,6 +1423,7 @@ static void handle_command(const std::string &cmd, const std::string &payload)
         }
     } else if(cmd=="set_subtitle"){
         int id=(int)json_get_int(payload,"id");
+        if(!G.fmt_ctx)break;
         if(id<0){if(G.sub_stream_idx>=0)G.fmt_ctx->streams[G.sub_stream_idx]->discard=AVDISCARD_ALL;G.sub_stream_idx=-1;}
         else if((unsigned)id<G.fmt_ctx->nb_streams){if(G.sub_stream_idx>=0)G.fmt_ctx->streams[G.sub_stream_idx]->discard=AVDISCARD_ALL;
              G.sub_stream_idx=id;G.fmt_ctx->streams[id]->discard=AVDISCARD_DEFAULT;}
