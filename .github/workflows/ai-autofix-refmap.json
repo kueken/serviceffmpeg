@@ -1,0 +1,12 @@
+{
+  "serviceffmpeg/main.cpp": [
+    "output/writer/mipsel/h264.c",
+    "container/container_ffmpeg.c",
+    "output/writer/common/pes.c"
+  ],
+  "serviceffmpeg/serviceffmpeg.cpp": [
+    "output/writer/mipsel/h264.c",
+    "container/container_ffmpeg.c",
+    "output/writer/common/pes.c"
+  ]
+}

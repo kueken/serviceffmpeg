@@ -15,15 +15,16 @@ on:
     branches: [test]
     paths:
       - ".github/workflows/ai-autofix.yml"
+      - ".github/ai-autofix-refmap.json"
       - "scripts/ai_fix_single.py"
   workflow_dispatch:
     inputs:
       reference_repo:
-        description: "Optional: Referenz-Repo zum Code-Vergleich (owner/name), leer = nur Fehlersuche"
+        description: "Referenz-Repo (owner/name). Leer = Standard aus env, 'none' = ohne Vergleich"
         required: false
         default: ""
       reference_ref:
-        description: "Branch/Tag/SHA des Referenz-Repos (leer = Default-Branch)"
+        description: "Branch/Tag/SHA des Referenz-Repos (leer = Standard aus env)"
         required: false
         default: ""
       reference_subdir:
@@ -51,6 +52,13 @@ concurrency:
 env:
   BASE_BRANCH: test
   SOURCE_DIR: serviceffmpeg
+  # Standard-Referenz für ALLE Läufe (push, schedule, dispatch).
+  # Dispatch-Eingaben überschreiben sie; im Dispatch "none" = ohne Vergleich.
+  REFERENCE_REPO: carlgustav19660-dev/exteplayer3
+  REFERENCE_REF: fix-all-sps-pps
+  REFERENCE_SUBDIR: ""
+  # Standard-Prüfschwerpunkt (zusätzlich zur allgemeinen Fehlersuche); Dispatch-Eingabe "focus" überschreibt ihn
+  DEFAULT_FOCUS: "Behandlung von H.264 SPS/PPS (Parametersätze, Extradata, Einfügen vor IDR-Frames) im Vergleich zur Referenz"
 
 jobs:
   # ------------------------------------------------------------------
@@ -99,6 +107,22 @@ jobs:
       matrix:
         file: ${{ fromJson(needs.detect-files.outputs.files) }}
     steps:
+      - name: Referenz auflösen
+        id: ref
+        env:
+          IN_REPO: ${{ inputs.reference_repo }}
+          IN_REF: ${{ inputs.reference_ref }}
+          IN_SUB: ${{ inputs.reference_subdir }}
+        run: |
+          repo="${IN_REPO:-$REFERENCE_REPO}"
+          ref="${IN_REF:-$REFERENCE_REF}"
+          sub="${IN_SUB:-$REFERENCE_SUBDIR}"
+          if [ "$repo" = "none" ]; then repo=""; fi
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref"   >> "$GITHUB_OUTPUT"
+          echo "subdir=$sub" >> "$GITHUB_OUTPUT"
+          echo "Referenz: ${repo:-keine} @ ${ref:-default}"
+
       - name: Checkout
         uses: actions/checkout@v7
         with:
@@ -106,11 +130,11 @@ jobs:
           persist-credentials: false
 
       - name: Checkout Referenz-Repo
-        if: inputs.reference_repo != ''
+        if: steps.ref.outputs.repo != ''
         uses: actions/checkout@v7
         with:
-          repository: ${{ inputs.reference_repo }}
-          ref: ${{ inputs.reference_ref }}
+          repository: ${{ steps.ref.outputs.repo }}
+          ref: ${{ steps.ref.outputs.ref }}
           path: ref-src
           # Für private Referenz-Repos: Secret REFERENCE_REPO_TOKEN (PAT mit Lesezugriff) anlegen
           token: ${{ secrets.REFERENCE_REPO_TOKEN || github.token }}
@@ -128,10 +152,11 @@ jobs:
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           TARGET_FILE: ${{ matrix.file }}
-          AI_FIX_FOCUS: ${{ inputs.focus }}
-          AI_FIX_REF_DIR: ${{ inputs.reference_repo != '' && format('{0}/ref-src', github.workspace) || '' }}
-          AI_FIX_REF_SUBDIR: ${{ inputs.reference_subdir }}
-          AI_FIX_REF_MAP: ${{ inputs.reference_repo != '' && '.github/ai-autofix-refmap.json' || '' }}
+          AI_FIX_FOCUS: ${{ inputs.focus || env.DEFAULT_FOCUS }}
+          AI_FIX_REF_MAX_CHARS: "90000"   # container_ffmpeg.c ist groß
+          AI_FIX_REF_DIR: ${{ steps.ref.outputs.repo != '' && format('{0}/ref-src', github.workspace) || '' }}
+          AI_FIX_REF_SUBDIR: ${{ steps.ref.outputs.subdir }}
+          AI_FIX_REF_MAP: ${{ steps.ref.outputs.repo != '' && '.github/ai-autofix-refmap.json' || '' }}
         run: python scripts/ai_fix_single.py "$TARGET_FILE"
 
       - name: Upload result
