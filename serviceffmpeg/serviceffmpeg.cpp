@@ -29,8 +29,8 @@
 #include <sys/un.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
-#include <linux/dvb/video.h>   /* VIDEO_STOP, VIDEO_SELECT_SOURCE, VIDEO_SOURCE_DEMUX */
-#include <linux/dvb/audio.h>   /* AUDIO_STOP, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX */
+#include <linux/dvb/video.h>
+#include <linux/dvb/audio.h>
 #include <sys/types.h>
 #include <errno.h>
 #include <stdio.h>
@@ -40,17 +40,14 @@
 
 #include "serviceffmpeg.h"
 
-/* Path to the external player binary - installed alongside the .so */
 #ifndef SFMP_PLAYER_BIN
 #define SFMP_PLAYER_BIN  "/usr/bin/ffmpeg-player"
 #endif
 
-/* Position update interval in ms */
 #define SFMP_POSITION_INTERVAL  500
 
 /* ======================================================================
- * Simple JSON helpers (no external dependency)
- * These are intentionally minimal - just enough to build/parse our protocol
+ * Simple JSON helpers
  * ====================================================================== */
 static std::string json_str(const std::string &key, const std::string &val)
 {
@@ -66,7 +63,6 @@ static std::string json_int(const std::string &key, long long val)
     return "{" + inner + "}";
 }
 
-/* Extract a string value from flat JSON: "key":"value" */
 static std::string json_get_str(const std::string &json, const std::string &key)
 {
     std::string needle = "\"" + key + "\":\"";
@@ -78,7 +74,6 @@ static std::string json_get_str(const std::string &json, const std::string &key)
     return json.substr(pos, end - pos);
 }
 
-/* Extract an integer value from flat JSON: "key":12345 */
 static long long json_get_int(const std::string &json, const std::string &key)
 {
     std::string needle = "\"" + key + "\":";
@@ -215,7 +210,6 @@ eServiceFactoryFfmpeg::eServiceFactoryFfmpeg()
     if (sc)
     {
         std::list<std::string> ext;
-        /* Audio */
         ext.push_back("mp3");  ext.push_back("mp2");  ext.push_back("m2a");
         ext.push_back("ogg");  ext.push_back("oga");  ext.push_back("flac");
         ext.push_back("wav");  ext.push_back("wave"); ext.push_back("aac");
@@ -224,7 +218,6 @@ eServiceFactoryFfmpeg::eServiceFactoryFfmpeg()
         ext.push_back("alac"); ext.push_back("opus"); ext.push_back("amr");
         ext.push_back("au");   ext.push_back("wv");   ext.push_back("mid");
         ext.push_back("aif");  ext.push_back("aiff");
-        /* Video */
         ext.push_back("mkv");  ext.push_back("mp4");  ext.push_back("mov");
         ext.push_back("avi");  ext.push_back("mpg");  ext.push_back("mpeg");
         ext.push_back("mpe");  ext.push_back("m4v");  ext.push_back("vob");
@@ -236,10 +229,8 @@ eServiceFactoryFfmpeg::eServiceFactoryFfmpeg()
         ext.push_back("pva");  ext.push_back("wtv");  ext.push_back("stream");
         ext.push_back("hevc"); ext.push_back("h264"); ext.push_back("h265");
         ext.push_back("264");  ext.push_back("265");
-        /* Playlists / streams */
         ext.push_back("m3u");  ext.push_back("m3u8"); ext.push_back("pls");
 
-        /* Replace servicemp3 (0x1001) as the default handler */
         sc->removeServiceFactory(0x1001);
         sc->addServiceFactory(eServiceFactoryFfmpeg::id, this, ext);
     }
@@ -314,17 +305,14 @@ eServiceFfmpeg::eServiceFfmpeg(eServiceReference ref)
     m_nownext_timer = eTimer::create(eApp);
     CONNECT(m_nownext_timer->timeout, eServiceFfmpeg::updateEpgCacheNowNext);
 
-    /* Check for alternate user agent config */
     if (eConfigManager::getConfigBoolValue("config.mediaplayer.useAlternateUserAgent"))
         m_useragent = eConfigManager::getConfigValue("config.mediaplayer.alternateUserAgent");
 
-    /* Parse extra headers from URL fragment: url#key=val&key2=val2 */
     size_t hash = m_ref.path.find('#');
     if (hash != std::string::npos &&
         (m_ref.path.compare(0, 4, "http") == 0 || m_ref.path.compare(0, 4, "rtsp") == 0))
     {
         m_extra_headers = m_ref.path.substr(hash + 1);
-        /* Extract User-Agent if present */
         size_t ua_pos = m_extra_headers.find("User-Agent=");
         if (ua_pos != std::string::npos)
         {
@@ -342,7 +330,6 @@ eServiceFfmpeg::eServiceFfmpeg(eServiceReference ref)
 eServiceFfmpeg::~eServiceFfmpeg()
 {
     m_current_sub_track = -1;
-    
     stop();
     m_nownext_timer->stop();
 }
@@ -352,13 +339,10 @@ eServiceFfmpeg::~eServiceFfmpeg()
  * ====================================================================== */
 bool eServiceFfmpeg::launchPlayer()
 {
-    /* Build socket path using our PID so multiple instances don't collide */
     char sock_path[128];
     snprintf(sock_path, sizeof(sock_path), SFMP_SOCKET_PATH, (int)getpid());
     m_socket_path = sock_path;
 
-    /* Create the Unix domain socket server side BEFORE fork,
-     * so the player can connect as soon as it's ready */
     int srv_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (srv_fd < 0) { eDebug("[serviceffmpeg] socket() failed: %m"); return false; }
 
@@ -375,22 +359,9 @@ bool eServiceFfmpeg::launchPlayer()
     }
     listen(srv_fd, 1);
 
-    /* Build command line for ffmpeg-player */
     std::string uri = buildUri();
 
-    /* Hand over DVB devices to the player process.
-     * Analogous to Neutrino's cPlayback::Open() which calls
-     * audioDecoder->closeDevice() and videoDecoder->closeDevice()
-     * before exteplayer3 opens the devices.
-     *
-     * We cannot directly close E2's internal DVB fds, but we can
-     * signal the kernel driver via /proc/stb to release Live-TV
-     * demux feeding. The player then opens the devices fresh.
-     *
-     * Without this, E2's demux and our MEMORY-mode player both
-     * drive the same BCM decoder simultaneously → no picture. */
     {
-        /* Stop E2's demux feed to the hardware decoder */
         int tmp_vfd = open("/dev/dvb/adapter0/video0", O_RDWR | O_NONBLOCK | O_CLOEXEC);
         if (tmp_vfd >= 0) {
             ioctl(tmp_vfd, VIDEO_STOP);
@@ -410,8 +381,6 @@ bool eServiceFfmpeg::launchPlayer()
 
     if (pid == 0)
     {
-        /* Child process */
-        /* Close inherited E2 fds efficiently via /proc/self/fd */
         {
             DIR *dirp = opendir("/proc/self/fd");
             if (dirp) {
@@ -436,16 +405,13 @@ bool eServiceFfmpeg::launchPlayer()
               "--uri", uri.c_str(),
               NULL);
 
-        /* If execl fails */
         fprintf(stderr, "[ffmpeg-player] execl failed: %s\n", strerror(errno));
         _exit(127);
     }
 
-    /* Parent */
     m_player_pid = pid;
     eDebug("[serviceffmpeg] launched player pid=%d", (int)pid);
 
-    /* Accept connection from player (with timeout) */
     struct timeval tv = { 5, 0 };
     fd_set rset;
     FD_ZERO(&rset); FD_SET(srv_fd, &rset);
@@ -459,18 +425,14 @@ bool eServiceFfmpeg::launchPlayer()
     }
 
     m_ipc_fd = accept(srv_fd, NULL, NULL);
-    close(srv_fd);  /* Done with listen socket */
+    close(srv_fd);
 
     if (m_ipc_fd < 0) { eDebug("[serviceffmpeg] accept() failed: %m"); killPlayer(); return false; }
 
-    /* Make non-blocking for E2 event loop integration.
-     * Note: accept4() is a GNU extension and requires _GNU_SOURCE.
-     * We use accept() + fcntl() instead — portable and functionally identical. */
     int flags = fcntl(m_ipc_fd, F_GETFL, 0);
     if (flags < 0) flags = 0;
     fcntl(m_ipc_fd, F_SETFL, flags | O_NONBLOCK);
 
-    /* Register socket notifier so E2 calls ipcReceive() when data arrives */
     m_sn_ipc = eSocketNotifier::create(eApp, m_ipc_fd, eSocketNotifier::Read);
     CONNECT(m_sn_ipc->activated, eServiceFfmpeg::ipcReceive);
 
@@ -487,7 +449,6 @@ void eServiceFfmpeg::killPlayer()
     {
         kill(m_player_pid, SIGTERM);
         int status;
-        /* Give it 2 seconds then SIGKILL */
         for (int i = 0; i < 20; i++)
         {
             usleep(100000);
@@ -506,10 +467,8 @@ done:
 std::string eServiceFfmpeg::buildUri() const
 {
     std::string uri = m_ref.path;
-    /* Strip fragment (handled separately as headers) */
     size_t hash = uri.find('#');
     if (hash != std::string::npos) uri = uri.substr(0, hash);
-    /* Strip &suburi= (external subtitle, TODO) */
     size_t sub = uri.find("&suburi=");
     if (sub != std::string::npos) uri = uri.substr(0, sub);
     return uri;
@@ -517,10 +476,6 @@ std::string eServiceFfmpeg::buildUri() const
 
 /* ======================================================================
  * IPC send/receive
- * Wire format: one JSON object per line (newline terminated)
- * {"cmd":"play"}\n
- * {"evt":"started"}\n
- * {"evt":"position","pos_ms":12345,"dur_ms":98765}\n
  * ====================================================================== */
 bool eServiceFfmpeg::ipcSend(const std::string &cmd, const std::string &params)
 {
@@ -529,17 +484,36 @@ bool eServiceFfmpeg::ipcSend(const std::string &cmd, const std::string &params)
     if (!params.empty()) msg += "," + params;
     msg += "}\n";
 
-    ssize_t sent = write(m_ipc_fd, msg.c_str(), msg.length());
-    if (sent < 0)
+    /* NEU: Retry-Schleife für EAGAIN/EINTR. Der Socket ist non-blocking;
+     * bei vollem Puffer würde ein einzelner write() fehlschlagen und der
+     * Befehl wäre verloren. Wir versuchen es bis zu 10x mit 10ms Pause. */
+    size_t off = 0;
+    int retries = 0;
+    while (off < msg.length() && retries < 10)
     {
-        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+        ssize_t sent = write(m_ipc_fd, msg.c_str() + off, msg.length() - off);
+        if (sent < 0)
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+            {
+                usleep(10000);
+                retries++;
+                continue;
+            }
+            eDebug("[serviceffmpeg] ipcSend write error: %m");
             return false;
-        eDebug("[serviceffmpeg] ipcSend write error: %m");
-        return false;
+        }
+        if (sent == 0)
+        {
+            usleep(10000);
+            retries++;
+            continue;
+        }
+        off += (size_t)sent;
     }
-    if ((size_t)sent != msg.length())
+    if (off != msg.length())
     {
-        eDebug("[serviceffmpeg] ipcSend short write %zd/%zu", sent, msg.length());
+        eDebug("[serviceffmpeg] ipcSend short write %zu/%zu", off, msg.length());
         return false;
     }
     return true;
@@ -547,7 +521,6 @@ bool eServiceFfmpeg::ipcSend(const std::string &cmd, const std::string &params)
 
 void eServiceFfmpeg::ipcReceive(int)
 {
-    /* Read available data into line buffer */
     if (m_ipc_fd < 0) return;
     char buf[4096];
     ssize_t n = read(m_ipc_fd, buf, sizeof(buf) - 1);
@@ -555,7 +528,6 @@ void eServiceFfmpeg::ipcReceive(int)
     {
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return;
         eDebug("[serviceffmpeg] IPC pipe closed (player exited)");
-        /* Player died unexpectedly - signal EOF so E2 can react */
         if (m_state == stRunning || m_state == stPaused)
             m_event((iPlayableService*)this, iPlayableService::evEOF);
         return;
@@ -569,7 +541,6 @@ void eServiceFfmpeg::ipcReceive(int)
         return;
     }
 
-    /* Process complete lines */
     size_t pos;
     while ((pos = m_ipc_recv_buf.find('\n')) != std::string::npos)
     {
@@ -579,7 +550,7 @@ void eServiceFfmpeg::ipcReceive(int)
         if (line.empty()) continue;
 
         std::string evt     = json_get_str(line, "evt");
-        std::string payload = line;   /* full JSON for further parsing */
+        std::string payload = line;
         handleEvent(evt, payload);
     }
 }
@@ -629,18 +600,16 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
         {
             m_buffering = false;
             m_buffer_percentage = 100;
-            m_event((iPlayableService*)this, iPlayableService::evUpdatedInfo); /* reuse existing event */
+            m_event((iPlayableService*)this, iPlayableService::evUpdatedInfo);
         }
     }
     else if (evt == SFMP_EVT_POSITION)
     {
         m_last_position = msToPts(json_get_int(payload, "pos_ms"));
         m_duration      = msToPts(json_get_int(payload, "dur_ms"));
-        /* evUpdatedInfo would spam too much, position is pulled via getPlayPosition() */
     }
     else if (evt == SFMP_EVT_INFO)
     {
-        /* Stream info arrived - parse tracks, video info, etc. */
         m_seekable   = (bool)json_get_int(payload, "seekable");
         m_is_live    = (bool)json_get_int(payload, "live");
         m_duration   = msToPts(json_get_int(payload, "dur_ms"));
@@ -682,7 +651,6 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
     }
     else if (evt == SFMP_EVT_RECORD_INFO)
     {
-        /* recording progress - can be forwarded if needed */
     }
     else
     {
@@ -692,15 +660,12 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
 
 /* ======================================================================
  * Track list parsing
- * Audio tracks JSON fragment: "audio":[{"id":0,"lang":"deu","codec":"ac3","ch":2},...] 
  * ====================================================================== */
 void eServiceFfmpeg::parseTrackList(const std::string &json)
 {
-    /* Simple linear scan - not a full JSON parser but sufficient for our protocol */
     m_stream_info.audio_tracks.clear();
     m_stream_info.sub_tracks.clear();
 
-    /* Parse audio tracks */
     size_t apos = json.find("\"audio\":[");
     if (apos != std::string::npos)
     {
@@ -725,7 +690,6 @@ void eServiceFfmpeg::parseTrackList(const std::string &json)
         }
     }
 
-    /* Parse subtitle tracks */
     size_t spos = json.find("\"subs\":[");
     if (spos != std::string::npos)
     {
@@ -843,7 +807,6 @@ RESULT eServiceFfmpeg::start()
         return -1;
     }
 
-    /* Send initial configuration to player */
     if (!m_useragent.empty())
         ipcSend(SFMP_CMD_SET_USERAGENT,
                 json_str("ua", m_useragent));
@@ -1008,7 +971,6 @@ RESULT eServiceFfmpeg::enableSubtitles(iSubtitleUser *parent, SubtitleTrack &tra
     disableSubtitles();
     m_subtitle_user = parent;
 
-    /* Find the track by language/type */
     int stream_id = -1;
     for (size_t i = 0; i < m_stream_info.sub_tracks.size(); i++)
     {
@@ -1025,10 +987,6 @@ RESULT eServiceFfmpeg::enableSubtitles(iSubtitleUser *parent, SubtitleTrack &tra
         eDebug("[serviceffmpeg] subtitle track not found");
         return -1;
     }
-
-    /* TODO: Bitmap-Subtitles (DVB/PGS) benötigen einen separaten
-     * Overlay-Pfad über VIDEO_SET_CODEC_DATA bzw. den BCM-Subtitle-Stack.
-     * Text-Subtitles (SRT/ASS) laufen bereits über Pango in parseSubtitle(). */
 
     eDebug("[serviceffmpeg] enable subtitles stream_id=%d", stream_id);
     ipcSend(SFMP_CMD_SET_SUBTITLE, json_int("id", stream_id));
@@ -1074,10 +1032,6 @@ RESULT eServiceFfmpeg::getSubtitleList(std::vector<SubtitleTrack> &list)
 /* ======================================================================
  * iRecordableService
  * ====================================================================== */
-/* record() was removed from iRecordableService in scarthgap.
- * Use prepare(filename) + start() instead (stub implementations below).
- * This helper is kept for internal use. */
-
 RESULT eServiceFfmpeg::stopRecord()
 {
     if (!m_recording) return -1;
@@ -1159,12 +1113,9 @@ ePtr<iServiceInfoContainer> eServiceFfmpeg::getInfoObject(int w)
     return NULL;
 }
 
-
 /* ======================================================================
  * Stub implementations for mandatory scarthgap virtuals
  * ====================================================================== */
-
-/* iPlayableService stubs */
 RESULT eServiceFfmpeg::setTarget(int, bool)                          { return -1; }
 RESULT eServiceFfmpeg::audioChannel(ePtr<iAudioChannelSelection> &p) { p=0; return -1; }
 RESULT eServiceFfmpeg::timeshift(ePtr<iTimeshiftService> &p)         { p=0; return -1; }
@@ -1177,7 +1128,6 @@ RESULT eServiceFfmpeg::streamed(ePtr<iStreamedService> &p)           { p=0; retu
 RESULT eServiceFfmpeg::keys(ePtr<iServiceKeys> &p)                   { p=0; return -1; }
 void   eServiceFfmpeg::setQpipMode(bool, bool)                       { }
 
-/* iRecordableService stubs */
 RESULT eServiceFfmpeg::prepare(const char *filename, time_t, time_t, int,
                                 const char*, const char*, const char*,
                                 bool, bool, int)
@@ -1188,7 +1138,6 @@ RESULT eServiceFfmpeg::prepare(const char *filename, time_t, time_t, int,
 RESULT eServiceFfmpeg::prepareStreaming(bool, bool) { return -1; }
 RESULT eServiceFfmpeg::start(bool simulate)
 {
-    /* iRecordableService::start - triggers recording after prepare() */
     if (simulate) return 0;
     if (m_record_path.empty()) return -1;
     if (m_recording) return -1;

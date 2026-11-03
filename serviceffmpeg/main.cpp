@@ -143,7 +143,6 @@ static video_stream_type_t codec_to_bcm_video(AVCodecID id)
  */
 static int bcm_stream_type_primary(video_stream_type_t t)
 {
-    /* Werte die auf manchen BCM-Plattformen abweichen */
     switch (t) {
     case STREAMTYPE_MPEG4_H265: return 7;
     case STREAMTYPE_VC1:        return 3;
@@ -155,7 +154,6 @@ static int bcm_stream_type_primary(video_stream_type_t t)
 }
 static int bcm_stream_type_secondary(video_stream_type_t t)
 {
-    /* Alternativer Wert für Dreambox-kompatible Treiber */
     switch (t) {
     case STREAMTYPE_MPEG4_H265: return 22;
     case STREAMTYPE_VC1:        return 16;
@@ -191,12 +189,6 @@ static audio_stream_type_t codec_to_bcm_audio(AVCodecID id)
     }
 }
 
-/*
- * LinuxDvbMapBypassMode equivalent.
- * Standardwerte: die meisten Typen sind identisch zum enum-Wert.
- * Ausnahmen sind EAC3/WMA/WMA_PRO/RAW — wieder primary/secondary.
- * Wir übergeben beide Varianten.
- */
 static int bcm_bypass_primary(audio_stream_type_t t)
 {
     switch (t) {
@@ -224,13 +216,14 @@ static int bcm_bypass_secondary(audio_stream_type_t t)
 static std::atomic<bool>    g_stop_requested{false};
 static std::atomic<int64_t> g_seek_target_ms{-1};
 
+/* NEU: play-Flag. Der Service sendet "play" über IPC; der Player
+ * startet die Wiedergabe erst, wenn das Flag gesetzt ist (max 10s Wartezeit).
+ * Damit ist der play-Befehl nicht mehr wirkungslos, und ein späterer
+ * verzögerter Start (Buffering) ist möglich. */
+static std::atomic<bool>    g_play_requested{false};
+
 /* ====================================================================
  * PES Header Builder
- * Direkte Portierung von exteplayer3/output/writer/common/pes.c
- * InsertPesHeader()
- *
- * pts = INVALID_PTS_VALUE → kein PTS
- * pic_start_code ≠ 0     → Fake Start Code Extension (H.264/HEVC)
  * ==================================================================== */
 static uint32_t InsertPesHeader(uint8_t *data, int32_t size,
                                 uint8_t stream_id, uint64_t pts,
@@ -243,10 +236,9 @@ static uint32_t InsertPesHeader(uint8_t *data, int32_t size,
     data[pos++] = 0x01;
     data[pos++] = stream_id;
 
-    /* PES_packet_length */
     int32_t plen = size;
     if (plen > 0) {
-        plen += 3; /* flags */
+        plen += 3;
         if (pts != INVALID_PTS_VALUE) plen += 5;
         if (pic_start_code)           plen += 5;
     }
@@ -254,13 +246,8 @@ static uint32_t InsertPesHeader(uint8_t *data, int32_t size,
     data[pos++] = (plen >> 8) & 0xFF;
     data[pos++] = plen & 0xFF;
 
-    /* flags byte 1: 0x80 = marker */
     data[pos++] = 0x80;
-
-    /* flags byte 2: PTS_DTS_flags */
     data[pos++] = (pts != INVALID_PTS_VALUE) ? 0x80 : 0x00;
-
-    /* PES_header_data_length */
     data[pos++] = (pts != INVALID_PTS_VALUE) ? 0x05 : 0x00;
 
     if (pts != INVALID_PTS_VALUE) {
@@ -271,7 +258,6 @@ static uint32_t InsertPesHeader(uint8_t *data, int32_t size,
         data[pos++] = (uint8_t)(0x01 | ((pts & 0x7F) << 1));
     }
 
-    /* pic_start_code / Fake Start Code Extension */
     if (pic_start_code) {
         data[pos++] = 0x00;
         data[pos++] = 0x00;
@@ -291,20 +277,8 @@ static void UpdatePesHeaderPayloadSize(uint8_t *data, int32_t size)
 }
 
 /* ====================================================================
- * Write mit Retry (wie writev_with_retry in exteplayer3/writer.c)
+ * Write mit Retry
  * ==================================================================== */
-/*
- * WriteWithRetry — ported from exteplayer3/output/writer/mipsel/writer.c
- *
- * Uses select() to wait until the DVB device fd is ready to accept data,
- * rather than blind usleep() polling. This has two advantages:
- *   1. No CPU waste waiting for a slow BCM decoder to drain its buffer.
- *   2. Immediate abort when stop/seek is requested (checks g_stop_requested).
- *
- * The original exteplayer3 uses a "pipefd" control channel to signal abort.
- * We use a timeout (100ms) + g_stop_requested check instead, which is
- * simpler and fits our single-process architecture.
- */
 static ssize_t write_retry(int fd, const void *buf, size_t count)
 {
     const uint8_t *p   = (const uint8_t *)buf;
@@ -312,15 +286,13 @@ static ssize_t write_retry(int fd, const void *buf, size_t count)
 
     while (rem > 0)
     {
-        /* Abort immediately if stop or seek was requested */
         if (g_stop_requested.load())
             return -1;
 
-        /* Wait until fd is writable (up to 100ms per select call) */
         fd_set wfds;
         FD_ZERO(&wfds);
         FD_SET(fd, &wfds);
-        struct timeval tv = { 0, 100000 }; /* 100 ms */
+        struct timeval tv = { 0, 100000 };
 
         int sel = select(fd + 1, NULL, &wfds, NULL, &tv);
         if (sel < 0)
@@ -331,7 +303,7 @@ static ssize_t write_retry(int fd, const void *buf, size_t count)
             return -1;
         }
         if (sel == 0)
-            continue; /* timeout — retry select, check stop_requested again */
+            continue;
 
         if (!FD_ISSET(fd, &wfds))
             continue;
@@ -346,7 +318,6 @@ static ssize_t write_retry(int fd, const void *buf, size_t count)
         }
         if (ret == 0)
         {
-            /* fd said writable but wrote 0 — wait 10ms and retry */
             usleep(10000);
             continue;
         }
@@ -384,9 +355,6 @@ struct PlayerState {
     std::vector<SubTrack>   sub_tracks;
     int active_audio_track;
     std::atomic<bool>    running,paused;
-    /* stop_requested and seek_target_ms are global (g_stop_requested,
-     * g_seek_target_ms) so write_retry() can access them before
-     * PlayerState is defined. */
     std::atomic<int>     speed;
     pthread_mutex_t seek_mutex;
     int dvb_video_fd,dvb_audio_fd;
@@ -409,7 +377,6 @@ struct PlayerState {
 
 /* ====================================================================
  * H.264 Writer
- * Portiert aus exteplayer3/output/writer/mipsel/h264.c
  * ==================================================================== */
 struct H264State {
     bool     initialHeader;
@@ -429,13 +396,11 @@ static void h264_prepare_codec_data(const uint8_t *extra, int extra_size)
     g_h264.nalLengthBytes=(extra[4]&0x03)+1;
     static const uint8_t sc[]={0,0,0,1};
     uint8_t tmp[2048]; uint32_t tmp_len=0;
-    /* SPS */
     uint16_t sps_len=(extra[6]<<8)|extra[7];
     if(extra_size<8+(int)sps_len) return;
     if(tmp_len+4+(uint32_t)sps_len>sizeof(tmp)) return;
     memcpy(tmp+tmp_len,sc,4);tmp_len+=4;
     memcpy(tmp+tmp_len,extra+8,sps_len);tmp_len+=sps_len;
-    /* PPS */
     int pp=8+sps_len;
     if(extra_size>=pp+3){
         uint16_t pps_len=(extra[pp+1]<<8)|extra[pp+2]; pp+=3;
@@ -458,15 +423,11 @@ static bool write_video_h264(int fd, const uint8_t *data, int size,
     static const uint8_t sc[]={0,0,0,1};
     uint8_t PesHeader[PES_MAX_HEADER_SIZE];
 
-    /* Fake Start Code = (Version << 8) | PES_VERSION_FAKE_START_CODE
-     * Version is always 0 (confirmed from container_ffmpeg.c).
-     * PES_VERSION_FAKE_START_CODE = 0x31 (from exteplayer3 pes.h, NOT 0x45) */
     int32_t fake_sc = (0 << 8) | 0x31;
 
     bool is_annexb=(size>3)&&(data[0]==0&&data[1]==0&&data[2]==0&&data[3]==1);
 
     if(is_annexb) {
-        /* Prüfe ob SPS im Stream vorhanden */
         if(!g_h264.sps_pps_in_stream) {
             for(int i=0;i<(int)size-5&&i<64;i++) {
                 if(data[i]==0&&data[i+1]==0&&data[i+2]==0&&data[i+3]==1&&
@@ -486,13 +447,11 @@ static bool write_video_h264(int fd, const uint8_t *data, int size,
         return writev_retry(fd,iov,ic)>=0;
     }
 
-    /* AVCC: Prepare codec data if not done */
     if(!g_h264.codecData && extra) h264_prepare_codec_data(extra,extra_size);
     if(!g_h264.codecData) return false;
 
     struct iovec iov[64]; int ic=0;
     iov[ic].iov_base=PesHeader;
-    /* AVCC path: NO fake start code (0), per exteplayer3 h264.c */
     iov[ic++].iov_len=InsertPesHeader(PesHeader,-1,MPEG_VIDEO_PES_START_CODE,pts,0);
     if(g_h264.initialHeader){
         g_h264.initialHeader=false;
@@ -512,7 +471,7 @@ static bool write_video_h264(int fd, const uint8_t *data, int size,
 }
 
 /* ====================================================================
- * H.265 Writer (portiert aus h265.c)
+ * H.265 Writer
  * ==================================================================== */
 struct H265State {
     bool     initialHeader;
@@ -525,46 +484,38 @@ struct H265State {
 
 /* ====================================================================
  * AAC ADTS State
- * Stores stream-specific ADTS header built from AVCodecParameters extradata.
- * An MP4 container stores AAC as raw frames (no ADTS sync word).
- * The BCM decoder requires ADTS-wrapped frames.
- * We build the header once from the AudioSpecificConfig (2-byte extradata)
- * so profile, sample rate, and channel count are always correct.
  * ==================================================================== */
 struct AACState {
     uint8_t adts_header[7];
     bool    has_header;
-    bool    stream_has_adts;  /* true if source already has 0xFF 0xF? sync */
+    bool    stream_has_adts;
     AACState():has_header(false),stream_has_adts(false){ memset(adts_header,0,7); }
 } g_aac;
 
 static void aac_build_adts_header(const uint8_t *extra, int extra_size,
                                    int sample_rate, int channels)
 {
-    /* Sampling frequency index table */
     static const int sf_table[] = {
         96000,88200,64000,48000,44100,32000,24000,22050,
         16000,12000,11025,8000,7350,0,0,0
     };
 
-    int profile = 1;  /* AAC-LC = 1 (ADTS object type = profile+1) */
-    int sf_idx  = 4;  /* default 44100 Hz */
+    int profile = 1;
+    int sf_idx  = 4;
     int ch_cfg  = (channels > 0 && channels < 8) ? channels : 2;
 
     if (extra && extra_size >= 2)
     {
-        /* AudioSpecificConfig: profile_ObjectType(5) | sf_index(4) | channel(4) */
         int aot   = (extra[0] >> 3) & 0x1F;
         sf_idx    = ((extra[0] & 0x07) << 1) | ((extra[1] >> 7) & 0x01);
         ch_cfg    = (extra[1] >> 3) & 0x0F;
-        profile   = (aot > 0) ? aot - 1 : 1;  /* ADTS profile = aot-1 */
-        if (profile > 3) profile = 1;           /* clamp to valid ADTS range */
+        profile   = (aot > 0) ? aot - 1 : 1;
+        if (profile > 3) profile = 1;
         fprintf(stderr, "[player] AAC from extradata: aot=%d sf_idx=%d ch=%d\n",
                 aot, sf_idx, ch_cfg);
     }
     else
     {
-        /* No extradata: guess from sample rate */
         for (int i = 0; i < 16; i++) {
             if (sf_table[i] == sample_rate) { sf_idx = i; break; }
         }
@@ -572,20 +523,12 @@ static void aac_build_adts_header(const uint8_t *extra, int extra_size,
                 profile, sample_rate, ch_cfg);
     }
 
-    /* Build 7-byte ADTS header (no CRC variant):
-     * syncword(12)=0xFFF | ID(1)=0 | layer(2)=0 | protection_absent(1)=1
-     * profile(2) | sf_index(4) | private(1)=0 | channel(3) | orig(1)=0 | home(1)=0
-     * copyright_id_bit(1)=0 | copyright_id_start(1)=0 | frame_length(13) | ...
-     * aac_frame_length is set per-packet in write_audio_aac()
-     * Here we set the fixed fields: */
     g_aac.adts_header[0] = 0xFF;
-    g_aac.adts_header[1] = 0xF1;  /* MPEG-4, no CRC */
+    g_aac.adts_header[1] = 0xF1;
     g_aac.adts_header[2] = (uint8_t)(((profile & 0x3) << 6) |
                                       ((sf_idx  & 0xF) << 2) |
                                       ((ch_cfg  >> 2) & 0x1));
     g_aac.adts_header[3] = (uint8_t)(((ch_cfg & 0x3) << 6));
-    /* Bytes 4-6 contain frame_length + buffer_fullness + num_blocks
-     * These are set per-packet. Initialize to zero. */
     g_aac.adts_header[4] = 0x00;
     g_aac.adts_header[5] = 0x1F;
     g_aac.adts_header[6] = 0xFC;
@@ -602,7 +545,7 @@ static void h265_prepare_codec_data(const uint8_t *extra, int extra_size)
     int num_arrays=extra[pos++];
     for(int a=0;a<num_arrays&&pos<extra_size;a++){
         if(pos+3>extra_size) break;
-        pos++; /* nal_type */
+        pos++;
         int num_nalus=(extra[pos]<<8)|extra[pos+1]; pos+=2;
         for(int n=0;n<num_nalus&&pos<extra_size;n++){
             if(pos+2>extra_size) break;
@@ -625,9 +568,9 @@ static bool write_video_h265(int fd, const uint8_t *data, int size,
                               uint64_t pts, const uint8_t *extra, int extra_size)
 {
     if(fd<0||!data||size<=0) return false;
-    static uint8_t sc_buf[]={0,0,0,1}; /* AnnexB startcode for HVCC NAL */
+    static uint8_t sc_buf[]={0,0,0,1};
     uint8_t PesHeader[PES_MAX_HEADER_SIZE];
-    int32_t fake_sc=(0<<8)|0x31;  /* PES_VERSION_FAKE_START_CODE=0x31 per exteplayer3 pes.h */
+    int32_t fake_sc=(0<<8)|0x31;
 
     if(!g_h265.codecData && extra) h265_prepare_codec_data(extra,extra_size);
 
@@ -656,7 +599,7 @@ static bool write_video_h265(int fd, const uint8_t *data, int size,
 }
 
 /* ====================================================================
- * MPEG-2 Video Writer (portiert aus mpeg2.c)
+ * MPEG-2 Video Writer
  * ==================================================================== */
 static bool g_mpeg2_must_send_header=true;
 
@@ -668,7 +611,6 @@ static bool write_video_mpeg2(int fd, const uint8_t *data, int size,
     struct iovec iov[4]; int ic=0;
     iov[ic].iov_base=PesHeader; iov[ic++].iov_len=0;
 
-    /* Sequence header vor GOP einfügen */
     if(extra&&extra_size>0&&g_mpeg2_must_send_header){
         for(int pos=0;pos<=size-4;pos++){
             if(data[pos]==0&&data[pos+1]==0&&data[pos+2]==1&&data[pos+3]==0xB8){
@@ -684,18 +626,13 @@ static bool write_video_mpeg2(int fd, const uint8_t *data, int size,
 
     int payload=0; for(int i=1;i<ic;i++) payload+=(int)iov[i].iov_len;
     iov[0].iov_len=InsertPesHeader(PesHeader,payload,MPEG_VIDEO_PES_START_CODE,pts,0);
-    /* MPEG-2 braucht PES_PRIVATE_DATA bit */
     PesHeader[6]|=0x01;
     UpdatePesHeaderPayloadSize(PesHeader,(int32_t)(payload+iov[0].iov_len-6));
     return writev_retry(fd,iov,ic)>=0;
 }
 
 /* ====================================================================
- * VC1 Writer — portiert aus vc1.c (Kodi STBsink patch)
- * PesHeader[6] |= 1 setzt das Original/Copy-Flag, das manche
- * mipsel-Empfänger (z.B. et4x00) benötigen.
- * VC1 Frame Start Code {0,0,1,0x0D} wird vorangestellt wenn fehlend.
- * VIDEO_SET_CODEC_DATA für Codec-Extradata (nicht auf Dreambox).
+ * VC1 Writer
  * ==================================================================== */
 static const uint8_t VC1_FRAME_START_CODE[4] = {0,0,1,0x0D};
 static bool g_vc1_initial = true;
@@ -713,20 +650,17 @@ static bool write_video_vc1(int fd, const uint8_t *data, int size,
     if(g_vc1_initial && extra && extra_size > 0)
     {
         g_vc1_initial = false;
-        /* Build codec data: 8 zero bytes + extradata (vc1.c: private_size+8) */
         static uint8_t codec_buf[2048];
         int codec_len = extra_size + 8;
         if(codec_len <= (int)sizeof(codec_buf))
         {
             memset(codec_buf, 0, 8);
             memcpy(codec_buf + 8, extra, extra_size);
-            /* Try VIDEO_SET_CODEC_DATA first (preferred on non-Dreambox) */
             video_codec_data_t vcd;
             vcd.length = codec_len;
             vcd.data   = codec_buf;
             if(ioctl(fd, VIDEO_SET_CODEC_DATA, &vcd) != 0)
             {
-                /* Fallback: send as iov */
                 iov[ic].iov_base = codec_buf;
                 iov[ic++].iov_len = codec_len;
                 PacketLength += codec_len;
@@ -734,7 +668,6 @@ static bool write_video_vc1(int fd, const uint8_t *data, int size,
         }
     }
 
-    /* Prepend VC1 frame start code if not already present */
     bool need_fsc = (size < 4 ||
                      memcmp(data, VC1_FRAME_START_CODE, 4) != 0);
     if(need_fsc)
@@ -750,14 +683,11 @@ static bool write_video_vc1(int fd, const uint8_t *data, int size,
 
     iov[0].iov_len = InsertPesHeader(PesHeader, PacketLength,
                                      MPEG_VIDEO_PES_START_CODE, pts, 0);
-    /* Copy/Original flag — required on mipsel (et4x00 et al.) */
     PesHeader[6] |= 1;
     if(need_fsc)
     {
-        /* Embed frame start code directly after PES header */
         memcpy(PesHeader + iov[0].iov_len, VC1_FRAME_START_CODE, 4);
         iov[0].iov_len += 4;
-        /* Remove the separate iov entry we added earlier */
         for(int i=1; i<ic-1; i++) iov[i]=iov[i+1];
         --ic;
     }
@@ -765,8 +695,7 @@ static bool write_video_vc1(int fd, const uint8_t *data, int size,
 }
 
 /* ====================================================================
- * WMV Writer — portiert aus wmv.c (Kodi STBsink patch)
- * WMV3/VC1_SM: 33-Byte Codec Data Header mit Width/Height
+ * WMV Writer
  * ==================================================================== */
 static bool g_wmv_initial = true;
 
@@ -784,7 +713,6 @@ static bool write_video_wmv(int fd, const uint8_t *data, int size,
     if(g_wmv_initial)
     {
         g_wmv_initial = false;
-        /* 33-byte WMV codec data header: 18 zeros + W(2) + H(2) + extradata(max 4) */
         static uint8_t wmv_codec[33];
         memset(wmv_codec, 0, 33);
         wmv_codec[18] = (width  >> 8) & 0xFF;
@@ -826,26 +754,19 @@ static bool write_video_wmv(int fd, const uint8_t *data, int size,
 
 /* ====================================================================
  * VP6/VP8/VP9 Writer
- * Portiert aus Kodi STBsink patch: vp.c
- *
- * VP frames need BCMV magic + 6-byte length field after PES header.
- * For VP9 on non-VuPlus/non-HiSilicon/non-Dreambox (= STB_OTHER = et9200):
- *   uses UpdatePesHeaderPayloadSize path with separate iov writes.
- * VP6 adds one extra zero byte after the 6-byte length field.
  * ==================================================================== */
 static bool write_video_vp(int fd, const uint8_t *data, int size,
                             uint64_t pts, bool is_vp6, bool is_vp9)
 {
     if(fd<0||!data||size<=0) return false;
-    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 32]; /* extra space for BCMV+len+flag */
+    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 32];
 
-    /* For VP9 on Vuplus: zero the PTS (we are STB_OTHER, so use normal pts) */
     uint64_t use_pts = pts;
 
     uint32_t pes_hdr_len = InsertPesHeader(PesHeader, size,
                                            MPEG_VIDEO_PES_START_CODE, use_pts, 0);
 
-    uint32_t bcmv_len = size + 4 + 6;  /* data + "BCMV" + 4-byte len + 2 bytes */
+    uint32_t bcmv_len = size + 4 + 6;
     memcpy(PesHeader + pes_hdr_len, "BCMV", 4);
     pes_hdr_len += 4;
     if(is_vp6) ++bcmv_len;
@@ -855,22 +776,19 @@ static bool write_video_vp(int fd, const uint8_t *data, int size,
     PesHeader[pes_hdr_len++] = (bcmv_len >>  8) & 0xFF;
     PesHeader[pes_hdr_len++] = (bcmv_len      ) & 0xFF;
     PesHeader[pes_hdr_len++] = 0;
-    /* VP9 non-Vuplus gets flag=1, others get 0 */
     PesHeader[pes_hdr_len++] = (!is_vp9) ? 0 : 1;
     if(is_vp6) PesHeader[pes_hdr_len++] = 0;
 
     int32_t payload_len = size + pes_hdr_len - 6;
     UpdatePesHeaderPayloadSize(PesHeader, payload_len);
 
-    /* Write header separately, then data — matches vp.c for non-Vuplus */
     if(write_retry(fd, PesHeader, pes_hdr_len) < 0) return false;
     if(write_retry(fd, data, size) < 0) return false;
     return true;
 }
 
 /* ====================================================================
- * Generischer Video Writer (MPEG4, VC1, etc.)
- * Portiert aus mpeg4.c
+ * Generischer Video Writer
  * ==================================================================== */
 static bool g_mpeg4_initial_header=true;
 
@@ -899,24 +817,19 @@ static bool write_audio_aac(int fd, const uint8_t *data, int size, uint64_t pts)
 {
     if(fd<0||!data||size<=0) return false;
     uint8_t PesHeader[PES_MAX_HEADER_SIZE];
-    /* Check if source already has ADTS sync word (0xFFF?) */
     bool has_adts = (size>1) && (data[0]==0xFF) && ((data[1]&0xF0)==0xF0);
     struct iovec iov[4]; int ic=0;
     iov[ic].iov_base=PesHeader; iov[ic++].iov_len=0;
     int payload=size;
     if(!has_adts)
     {
-        /* Build per-packet ADTS header.
-         * Nutze stream-spezifischen Header wenn verfügbar,
-         * sonst Fallback: AAC-LC 44100Hz Stereo. */
-        static uint8_t adts[7];  /* static: Pointer bleibt gültig */
+        static uint8_t adts[7];
         if(g_aac.has_header)
         {
             memcpy(adts, g_aac.adts_header, 7);
         }
         else
         {
-            /* Fallback: AAC-LC, 44100 Hz, Stereo */
             adts[0]=0xFF; adts[1]=0xF1; adts[2]=0x50;
             adts[3]=0x80; adts[4]=0x00; adts[5]=0x1F; adts[6]=0xFC;
         }
@@ -967,15 +880,12 @@ static bool write_video_packet(int fd, AVCodecID cid,
     case AV_CODEC_ID_HEVC:       return write_video_h265(fd,data,size,pts,extra,extra_size);
     case AV_CODEC_ID_MPEG1VIDEO:
     case AV_CODEC_ID_MPEG2VIDEO: return write_video_mpeg2(fd,data,size,pts,extra,extra_size);
-    /* VC1/WMV: frame start code + codec data header + Original flag */
     case AV_CODEC_ID_VC1:        return write_video_vc1(fd,data,size,pts,extra,extra_size);
     case AV_CODEC_ID_WMV3:       return write_video_wmv(fd,data,size,pts,extra,extra_size,
-                                     /* width/height stored in PlayerState */
                                      (G.video_stream_idx>=0 ?
                                       G.fmt_ctx->streams[G.video_stream_idx]->codecpar->width : 0),
                                      (G.video_stream_idx>=0 ?
                                       G.fmt_ctx->streams[G.video_stream_idx]->codecpar->height : 0));
-    /* VP frames need BCMV magic + length field — BCM driver requires it */
     case AV_CODEC_ID_VP6:
     case AV_CODEC_ID_VP6F:
     case AV_CODEC_ID_VP6A:       return write_video_vp(fd,data,size,pts,true,false);
@@ -988,19 +898,14 @@ static bool write_video_packet(int fd, AVCodecID cid,
 static bool write_audio_packet(int fd, AVCodecID cid,
                                 const uint8_t *data, int size, uint64_t pts)
 {
-    /* PES start codes per exteplayer3/output/writer/mipsel/:
-     *   MPEG_AUDIO_PES_START_CODE (0xc0): MP2, MP3, AAC, AC3, DTS, WMA
-     *   PRIVATE_STREAM_1          (0xbd): LPCM/PCM only
-     * AC3 and DTS use 0xc0 here — the BCM driver identifies them via
-     * AUDIO_SET_BYPASS_MODE, NOT the PES stream_id. */
     switch(cid){
     case AV_CODEC_ID_AAC:
     case AV_CODEC_ID_AAC_LATM:  return write_audio_aac(fd,data,size,pts);
     case AV_CODEC_ID_PCM_S16LE:
     case AV_CODEC_ID_PCM_S16BE:
     case AV_CODEC_ID_PCM_S24LE:
-    case AV_CODEC_ID_PCM_S24BE: return write_audio_private(fd,data,size,pts); /* 0xbd */
-    default:                    return write_audio_mpeg(fd,data,size,pts);     /* 0xc0 */
+    case AV_CODEC_ID_PCM_S24BE: return write_audio_private(fd,data,size,pts);
+    default:                    return write_audio_mpeg(fd,data,size,pts);
     }
 }
 
@@ -1035,19 +940,7 @@ static void ipc_send_error(int c,const std::string &m)
 { ipc_send("error",jint("code",c)+","+jstr("msg",m)); }
 
 /* ====================================================================
- * DVB Sink — korrekte ioctl-Reihenfolge aus linuxdvb_mipsel.c
- *
- * LinuxDvbOpen() Reihenfolge:
- *   video: CLEAR_BUFFER → SELECT_SOURCE(MEMORY) → FREEZE
- *   audio: CLEAR_BUFFER → SELECT_SOURCE(MEMORY) → PAUSE
- *
- * LinuxDvbPlay() Reihenfolge:
- *   video: SET_STREAMTYPE → VIDEO_PLAY → VIDEO_CONTINUE → CLEAR_BUFFER
- *   audio: SET_BYPASS_MODE → AUDIO_PLAY → AUDIO_CONTINUE
- *
- * LinuxDvbStop() Reihenfolge:
- *   video: CLEAR_BUFFER → STOP → SELECT_SOURCE(DEMUX)  ← wichtig!
- *   audio: CLEAR_BUFFER → STOP → SELECT_SOURCE(DEMUX)
+ * DVB Sink
  * ==================================================================== */
 static bool open_dvb_sink()
 {
@@ -1061,16 +954,11 @@ static bool open_dvb_sink()
         return false;
     }
 
-    /* Vollständiger Reset bevor wir MEMORY-Modus setzen.
-     * VIDEO_STOP + DEMUX erst, dann CLEAR + MEMORY.
-     * Das verhindert einen hängenden VIDEO_PLAY wenn der vorherige
-     * Service (z.B. MediaPlayer) die Devices nicht sauber freigegeben hat. */
     ioctl(G.dvb_video_fd, VIDEO_STOP);
     ioctl(G.dvb_video_fd, VIDEO_SELECT_SOURCE, (void*)VIDEO_SOURCE_DEMUX);
     ioctl(G.dvb_audio_fd, AUDIO_STOP);
     ioctl(G.dvb_audio_fd, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX);
 
-    /* VIDEO: CLEAR → SELECT_SOURCE(MEMORY) → FREEZE */
     if(ioctl(G.dvb_video_fd,VIDEO_CLEAR_BUFFER)==-1)
         fprintf(stderr,"[player] VIDEO_CLEAR_BUFFER: %s\n",strerror(errno));
     if(ioctl(G.dvb_video_fd,VIDEO_SELECT_SOURCE,(void*)VIDEO_SOURCE_MEMORY)==-1)
@@ -1078,7 +966,6 @@ static bool open_dvb_sink()
     if(ioctl(G.dvb_video_fd,VIDEO_FREEZE)==-1)
         fprintf(stderr,"[player] VIDEO_FREEZE: %s\n",strerror(errno));
 
-    /* AUDIO: CLEAR → SELECT_SOURCE(MEMORY) → PAUSE */
     if(ioctl(G.dvb_audio_fd,AUDIO_CLEAR_BUFFER)==-1)
         fprintf(stderr,"[player] AUDIO_CLEAR_BUFFER: %s\n",strerror(errno));
     if(ioctl(G.dvb_audio_fd,AUDIO_SELECT_SOURCE,AUDIO_SOURCE_MEMORY)==-1)
@@ -1101,13 +988,11 @@ static void configure_dvb_video_codec()
         G.video_extra_size=vs->codecpar->extradata_size;
     }
 
-    /* Codec-Daten vorbereiten */
     if(cid==AV_CODEC_ID_H264&&G.video_extra)
         h264_prepare_codec_data(G.video_extra,G.video_extra_size);
     else if(cid==AV_CODEC_ID_HEVC&&G.video_extra)
         h265_prepare_codec_data(G.video_extra,G.video_extra_size);
 
-    /* VIDEO_SET_STREAMTYPE: primary, dann secondary probieren */
     video_stream_type_t t=codec_to_bcm_video(cid);
     int ret=ioctl(G.dvb_video_fd,VIDEO_SET_STREAMTYPE,bcm_stream_type_primary(t));
     if(ret<0)
@@ -1117,7 +1002,6 @@ static void configure_dvb_video_codec()
     else
         fprintf(stderr,"[player] VIDEO_SET_STREAMTYPE=%d (%s)\n",(int)t,avcodec_get_name(cid));
 
-    /* VIDEO_PLAY → CONTINUE → CLEAR */
     if(ioctl(G.dvb_video_fd,VIDEO_PLAY)!=0)
         fprintf(stderr,"[player] VIDEO_PLAY: %s\n",strerror(errno));
     if(ioctl(G.dvb_video_fd,VIDEO_CONTINUE)==-1)
@@ -1131,7 +1015,6 @@ static void configure_dvb_audio_codec(AVCodecID cid)
     if(G.dvb_audio_fd<0) return;
     G.active_audio_codec_id=cid;
 
-    /* Build stream-correct AAC ADTS header from extradata */
     if((cid==AV_CODEC_ID_AAC || cid==AV_CODEC_ID_AAC_LATM)
        && G.audio_stream_idx>=0 && G.fmt_ctx)
     {
@@ -1159,25 +1042,17 @@ static void configure_dvb_audio_codec(AVCodecID cid)
 
 static void close_dvb_sink()
 {
-    /* Reset DVB devices to DEMUX mode so E2 Live-TV works after exit.
-     * Do NOT close() the fds explicitly: closing before process exit causes
-     * the BCM kernel driver to drop state — the last decoded frame stays
-     * frozen on screen (Standbild bug) and the tuner reference count changes.
-     * The OS closes them automatically at process exit, which is the right
-     * moment. This matches exteplayer3 LinuxDvbStop() behavior exactly. */
     if(G.dvb_video_fd>=0){
         ioctl(G.dvb_video_fd, VIDEO_CLEAR_BUFFER);
         ioctl(G.dvb_video_fd, VIDEO_STOP);
         ioctl(G.dvb_video_fd, VIDEO_SLOWMOTION, 0);
         ioctl(G.dvb_video_fd, VIDEO_FAST_FORWARD, 0);
         ioctl(G.dvb_video_fd, VIDEO_SELECT_SOURCE, (void*)VIDEO_SOURCE_DEMUX);
-        /* fd not closed: OS closes at process exit */
     }
     if(G.dvb_audio_fd>=0){
         ioctl(G.dvb_audio_fd, AUDIO_CLEAR_BUFFER);
         ioctl(G.dvb_audio_fd, AUDIO_STOP);
         ioctl(G.dvb_audio_fd, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX);
-        /* fd not closed: OS closes at process exit */
     }
 }
 
@@ -1214,8 +1089,6 @@ static bool open_input()
     G.is_live=(G.fmt_ctx->duration<=0||!G.fmt_ctx->pb||
                (G.fmt_ctx->ctx_flags&AVFMTCTX_NOHEADER));
     G.seekable=!G.is_live||(G.fmt_ctx->pb&&G.fmt_ctx->pb->seekable);
-    /* Normalize: av_find_best_stream returns AVERROR codes on failure,
-     * not -1. Map any negative value to -1 to avoid garbage index. */
     {
         int vsi=av_find_best_stream(G.fmt_ctx,AVMEDIA_TYPE_VIDEO,-1,-1,NULL,0);
         int asi=av_find_best_stream(G.fmt_ctx,AVMEDIA_TYPE_AUDIO,-1,-1,NULL,0);
@@ -1341,7 +1214,6 @@ static void process_packet(AVPacket *pkt)
 {
     if(!G.fmt_ctx||pkt->stream_index<0||(unsigned)pkt->stream_index>=G.fmt_ctx->nb_streams)return;
     AVStream *st=G.fmt_ctx->streams[pkt->stream_index];
-    /* pts in 90kHz Ticks — INVALID_PTS_VALUE wenn unbekannt */
     uint64_t pts90=INVALID_PTS_VALUE;
     if(pkt->pts!=AV_NOPTS_VALUE)
         pts90=(uint64_t)av_rescale_q(pkt->pts,st->time_base,{1,90000});
@@ -1392,6 +1264,11 @@ static void handle_command(const std::string &cmd, const std::string &payload)
         if(G.dvb_audio_fd>=0)ioctl(G.dvb_audio_fd,AUDIO_CONTINUE);
     } else if(cmd=="stop"){
         g_stop_requested=true;
+    } else if(cmd=="play"){
+        /* NEU: Der Service sendet "play", nachdem er SET_USERAGENT und
+         * SET_HEADERS gesendet hat. Wir setzen das Flag; playback_loop()
+         * wartet darauf. */
+        g_play_requested=true;
     } else if(cmd=="seek"){
         int64_t p=json_get_int(payload,"pos_ms");
         pthread_mutex_lock(&G.seek_mutex);g_seek_target_ms=p;pthread_mutex_unlock(&G.seek_mutex);
@@ -1417,7 +1294,7 @@ static void handle_command(const std::string &cmd, const std::string &payload)
         }
     } else if(cmd=="set_subtitle"){
         int id=(int)json_get_int(payload,"id");
-        if(!G.fmt_ctx) return;                    /* war: break; */
+        if(!G.fmt_ctx) return;
         if(id<0){
             if(G.sub_stream_idx>=0)
                 G.fmt_ctx->streams[G.sub_stream_idx]->discard=AVDISCARD_ALL;
@@ -1464,10 +1341,7 @@ static void playback_loop()
     AVPacket *pkt=av_packet_alloc();
     if(!pkt){ipc_send_error(1,"av_packet_alloc failed");return;}
 
-    /* Send info and video_size BEFORE started so E2 has all metadata
-     * when evStart fires. This prevents the BufferIndicator from
-     * appearing due to missing evVideoSizeChanged. */
-    send_track_info();   /* evt=info: duration, tracks, container */
+    send_track_info();
     if(G.video_stream_idx>=0){
         AVStream *vs=G.fmt_ctx->streams[G.video_stream_idx];
         int fps=vs->avg_frame_rate.den>0
@@ -1479,7 +1353,21 @@ static void playback_loop()
                  jint("fps",fps)+","+
                  jbool("progressive",true));
     }
-    ipc_send("started"); /* LAST: fires evStart in E2 */
+    ipc_send("started");
+
+    /* NEU: Auf 'play' warten, max. 10 Sekunden. Der Service sendet
+     * 'play', nachdem er SET_USERAGENT und SET_HEADERS abgesetzt hat.
+     * Ohne dieses Warten würde die Wiedergabe starten, bevor der
+     * Service die Header konfiguriert hat. */
+    {
+        int waited = 0;
+        while (!g_play_requested.load() && !g_stop_requested.load() && waited < 10000) {
+            poll_ipc();
+            usleep(10000);
+            waited += 10;
+        }
+    }
+    if (g_stop_requested.load()) { av_packet_free(&pkt); return; }
 
     int64_t last_pos=av_gettime_relative()/1000;
 
@@ -1546,9 +1434,6 @@ int main(int argc,char *argv[])
     if(socket_path.empty()||G.uri.empty()){
         fprintf(stderr,"Usage: %s --socket=PATH --uri URI\n",argv[0]);return 1;}
 
-    /* Unbuffered stderr: enigma2 captures child stderr via a pipe.
-     * Without this, stdio buffers output and it appears late or never
-     * if the process is killed before the buffer flushes. */
     setvbuf(stderr, NULL, _IONBF, 0);
 
     fprintf(stderr,"[player] v%s uri=%s\n",PLAYER_VERSION,G.uri.c_str());
@@ -1575,10 +1460,8 @@ int main(int argc,char *argv[])
 #endif
     avformat_network_init();
 
-    /* DVB öffnen und sofort in MEMORY-Modus schalten */
     G.hw_sink_available=open_dvb_sink();
 
-    /* Auf 'play' und initiale Konfiguration von E2 warten */
     {fd_set r;FD_ZERO(&r);FD_SET(G.ipc_fd,&r);
      struct timeval tv={10,0};select(G.ipc_fd+1,&r,NULL,NULL,&tv);poll_ipc();}
 
@@ -1588,17 +1471,12 @@ int main(int argc,char *argv[])
         if(G.video_stream_idx>=0){
             configure_dvb_video_codec();
         } else {
-            /* Audio-only: release video device back to DEMUX mode.
-             * Keeping it in MEMORY+FREEZE with no data causes the
-             * eDVBVideo driver to signal anomalies to E2, which
-             * triggers BufferIndicator before evStart arrives. */
             fprintf(stderr,"[player] audio-only: releasing DVB video device\n");
             ioctl(G.dvb_video_fd, VIDEO_CLEAR_BUFFER);
             ioctl(G.dvb_video_fd, VIDEO_STOP);
             ioctl(G.dvb_video_fd, VIDEO_SLOWMOTION, 0);
             ioctl(G.dvb_video_fd, VIDEO_FAST_FORWARD, 0);
             ioctl(G.dvb_video_fd, VIDEO_SELECT_SOURCE, (void*)VIDEO_SOURCE_DEMUX);
-            /* fd intentionally not closed here, OS closes at exit */
             G.dvb_video_fd = -1;
         }
         if(G.audio_stream_idx>=0)
