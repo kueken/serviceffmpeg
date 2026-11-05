@@ -576,7 +576,7 @@ static bool write_video_h265(int fd, const uint8_t *data, int size,
 
     bool is_annexb=(size>3)&&(data[0]==0&&data[1]==0&&data[2]==0&&data[3]==1);
 
-    struct iovec iov[8]; int ic=0;
+    struct iovec iov[64]; int ic=0;
     iov[ic].iov_base=PesHeader;
     iov[ic++].iov_len=InsertPesHeader(PesHeader,-1,MPEG_VIDEO_PES_START_CODE,pts,fake_sc);
     if(g_h265.initialHeader&&g_h265.codecData){
@@ -585,7 +585,7 @@ static bool write_video_h265(int fd, const uint8_t *data, int size,
     }
     if(!is_annexb&&size>4){
         uint32_t pos=0;
-        while(pos+4<=(uint32_t)size&&ic+2<8){
+        while(pos+4<=(uint32_t)size&&ic+2<64){
             uint32_t nl=AV_RB32(data+pos); pos+=4;
             if(pos+nl>(uint32_t)size) break;
             iov[ic].iov_base=sc_buf; iov[ic++].iov_len=4;
@@ -767,6 +767,7 @@ static bool write_video_vp(int fd, const uint8_t *data, int size,
                                            MPEG_VIDEO_PES_START_CODE, use_pts, 0);
 
     uint32_t bcmv_len = size + 4 + 6;
+    if(pes_hdr_len + 4 + 6 + 1 > sizeof(PesHeader)) return false;
     memcpy(PesHeader + pes_hdr_len, "BCMV", 4);
     pes_hdr_len += 4;
     if(is_vp6) ++bcmv_len;
@@ -1079,7 +1080,7 @@ static bool open_input()
     av_dict_free(&opts);
     if(ret<0){char eb[256];av_strerror(ret,eb,sizeof(eb));
         ipc_send_error(1,"open failed: "+std::string(eb));
-        G.fmt_ctx=NULL;return false;}
+        avformat_close_input(&G.fmt_ctx);G.fmt_ctx=NULL;return false;}
 
     ret=avformat_find_stream_info(G.fmt_ctx,NULL);
     if(ret<0){char eb[256];av_strerror(ret,eb,sizeof(eb));
@@ -1450,7 +1451,7 @@ int main(int argc,char *argv[])
             if(connect(fd,(struct sockaddr*)&addr,sizeof(addr))==0)ok=1;
             else usleep(100000);
         }
-        if(!ok){fprintf(stderr,"[player] IPC connect failed\n");return 1;}
+        if(!ok){fprintf(stderr,"[player] IPC connect failed\n");close(fd);return 1;}
         fcntl(fd,F_SETFL,fcntl(fd,F_GETFL,0)|O_NONBLOCK);
         G.ipc_fd=fd;
     }
@@ -1465,7 +1466,7 @@ int main(int argc,char *argv[])
     {fd_set r;FD_ZERO(&r);FD_SET(G.ipc_fd,&r);
      struct timeval tv={10,0};select(G.ipc_fd+1,&r,NULL,NULL,&tv);poll_ipc();}
 
-    if(!open_input()){close_dvb_sink();close(G.ipc_fd);return 1;}
+    if(!open_input()){close_dvb_sink();avformat_network_deinit();close(G.ipc_fd);return 1;}
 
     if(G.hw_sink_available){
         if(G.video_stream_idx>=0){
