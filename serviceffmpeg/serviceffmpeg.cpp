@@ -84,6 +84,43 @@ static long long json_get_int(const std::string &json, const std::string &key)
     return strtoll(json.c_str() + pos, NULL, 10);
 }
 
+/* JSON booleans arrive as true/false (player: jbool()), NOT as numbers.
+ * strtoll("true") == 0, so they must not go through json_get_int(). */
+static bool json_get_bool(const std::string &json, const std::string &key)
+{
+    std::string needle = "\"" + key + "\":";
+    size_t pos = json.find(needle);
+    if (pos == std::string::npos) return false;
+    pos += needle.length();
+    if (pos >= json.size()) return false;
+    return json.compare(pos, 4, "true") == 0 || json[pos] == '1';
+}
+
+/* The player sends a constant aspect=2. enigma2 (ServiceInfo.py) treats the
+ * values 1,2,5,6,... as "4:3" and 3,4,7,8,... as widescreen, so derive a
+ * usable value from the picture size instead (1 = 4:3, 3 = 16:9). */
+static int calcAspect(int w, int h)
+{
+    if (w <= 0 || h <= 0) return -1;
+    return (w * 2 >= h * 3) ? 3 : 1;
+}
+
+/* ffmpeg codec name -> enigma2 sVideoType value (index into
+ * PliExtraInfo.codec_data; table from memory, please verify). */
+static int videoTypeFromCodec(const std::string &c)
+{
+    if (c == "mpeg2video") return 0;
+    if (c == "h264")       return 1;
+    if (c == "h263")       return 2;
+    if (c == "vc1" || c == "wmv3") return 3;
+    if (c == "mpeg4")      return 4;
+    if (c == "mpeg1video") return 6;
+    if (c == "hevc")       return 7;
+    if (c == "vp8")        return 8;
+    if (c == "vp9")        return 9;
+    return iServiceInformation::resNA;
+}
+
 /* ======================================================================
  * eStaticServiceFfmpegInfo
  * ====================================================================== */
@@ -288,6 +325,7 @@ eServiceFfmpeg::eServiceFfmpeg(eServiceReference ref)
     , m_cached_sub_track(-2)
     , m_paused(false)
     , m_buffering(false)
+    , m_eof_sent(false)
     , m_buffer_percentage(0)
     , m_last_position(0)
     , m_duration(0)
@@ -528,8 +566,18 @@ void eServiceFfmpeg::ipcReceive(int)
     {
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return;
         eDebug("[serviceffmpeg] IPC pipe closed (player exited)");
-        if (m_state == stRunning || m_state == stPaused)
+        /* A closed socket stays "readable" forever: stop the notifier,
+         * otherwise this handler (and evEOF) fires in an endless loop. */
+        if (m_sn_ipc) m_sn_ipc->stop();
+        bool was_active = (m_state == stRunning || m_state == stPaused);
+        m_state = stStopped;
+        /* "eof" event may already have been delivered: InfoBarSeek would
+         * run its EOF handling twice (-> double popup / double skip). */
+        if (was_active && !m_eof_sent)
+        {
+            m_eof_sent = true;
             m_event((iPlayableService*)this, iPlayableService::evEOF);
+        }
         return;
     }
     buf[n] = 0;
@@ -570,6 +618,7 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
     else if (evt == SFMP_EVT_EOF)
     {
         eDebug("[serviceffmpeg] evEOF");
+        m_eof_sent = true;
         m_event((iPlayableService*)this, iPlayableService::evEOF);
     }
     else if (evt == SFMP_EVT_SOF)
@@ -610,14 +659,16 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
     }
     else if (evt == SFMP_EVT_INFO)
     {
-        m_seekable   = (bool)json_get_int(payload, "seekable");
-        m_is_live    = (bool)json_get_int(payload, "live");
+        m_seekable   = json_get_bool(payload, "seekable");
+        m_is_live    = json_get_bool(payload, "live");
         m_duration   = msToPts(json_get_int(payload, "dur_ms"));
         m_stream_info.container = json_get_str(payload, "container");
         m_stream_info.title     = json_get_str(payload, "title");
         parseTrackList(payload);
         parseVideoInfo(payload);
         m_event((iPlayableService*)this, iPlayableService::evUpdatedInfo);
+        /* InfoBarSeek enables its SeekActions only via this event */
+        m_event((iPlayableService*)this, iPlayableService::evSeekableStatusChanged);
     }
     else if (evt == SFMP_EVT_AUDIO_TRACKS)
     {
@@ -628,9 +679,9 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
     {
         m_width       = (int)json_get_int(payload, "w");
         m_height      = (int)json_get_int(payload, "h");
-        m_aspect      = (int)json_get_int(payload, "aspect");
+        m_aspect      = calcAspect(m_width, m_height);
         m_framerate   = (int)json_get_int(payload, "fps");
-        m_progressive = (bool)json_get_int(payload, "progressive");
+        m_progressive = json_get_bool(payload, "progressive");
         eDebug("[serviceffmpeg] video %dx%d aspect=%d fps=%d",
                m_width, m_height, m_aspect, m_framerate);
         m_event((iPlayableService*)this, iPlayableService::evVideoSizeChanged);
@@ -705,7 +756,7 @@ void eServiceFfmpeg::parseTrackList(const std::string &json)
             t.id       = (int)json_get_int(obj, "id");
             t.language = json_get_str(obj, "lang");
             t.codec    = json_get_str(obj, "codec");
-            t.bitmap   = (bool)json_get_int(obj, "bitmap");
+            t.bitmap   = json_get_bool(obj, "bitmap");
             m_stream_info.sub_tracks.push_back(t);
             obj_start = obj_end + 1;
         }
@@ -723,10 +774,10 @@ void eServiceFfmpeg::parseVideoInfo(const std::string &json)
     m_stream_info.video.codec       = json_get_str(json, "vcodec");
     m_stream_info.video.width       = (int)json_get_int(json, "w");
     m_stream_info.video.height      = (int)json_get_int(json, "h");
-    m_stream_info.video.aspect      = (int)json_get_int(json, "aspect");
+    m_stream_info.video.aspect      = calcAspect(m_stream_info.video.width, m_stream_info.video.height);
     m_stream_info.video.framerate   = (int)json_get_int(json, "fps");
     m_stream_info.video.bitrate     = (int)json_get_int(json, "vbps");
-    m_stream_info.video.progressive = (bool)json_get_int(json, "progressive");
+    m_stream_info.video.progressive = json_get_bool(json, "progressive");
 }
 
 void eServiceFfmpeg::parseSubtitle(const std::string &json)
@@ -955,6 +1006,7 @@ RESULT eServiceFfmpeg::getTrackInfo(struct iAudioTrackInfo &info, unsigned int n
     const sFfmpegAudioTrack &t = m_stream_info.audio_tracks[n];
     info.m_language    = t.language;
     info.m_description = t.codec;
+    info.m_pid         = (int)n;   /* was left uninitialised */
     return 0;
 }
 
@@ -974,8 +1026,7 @@ RESULT eServiceFfmpeg::enableSubtitles(iSubtitleUser *parent, SubtitleTrack &tra
     int stream_id = -1;
     for (size_t i = 0; i < m_stream_info.sub_tracks.size(); i++)
     {
-        if (m_stream_info.sub_tracks[i].language == track.language_code ||
-            m_stream_info.sub_tracks[i].id == track.pid)
+        if (m_stream_info.sub_tracks[i].id == track.pid)
         {
             stream_id = m_stream_info.sub_tracks[i].id;
             m_current_sub_track = (int)i;
@@ -1008,9 +1059,11 @@ RESULT eServiceFfmpeg::getCachedSubtitle(SubtitleTrack &track)
         m_cached_sub_track >= (int)m_stream_info.sub_tracks.size())
         return -1;
     const sFfmpegSubtitleTrack &t = m_stream_info.sub_tracks[m_cached_sub_track];
-    track.language_code = t.language;
-    track.pid           = t.id;
-    track.type          = t.bitmap ? 1 : 0;
+    track.language_code   = t.language;
+    track.pid             = t.id;
+    track.type            = 2;   /* 0=DVB 1=teletext 2=text */
+    track.page_number     = 1;   /* ServiceInfo.py: 1 = embedded */
+    track.magazine_number = 0;
     return 0;
 }
 
@@ -1020,10 +1073,13 @@ RESULT eServiceFfmpeg::getSubtitleList(std::vector<SubtitleTrack> &list)
     for (size_t i = 0; i < m_stream_info.sub_tracks.size(); i++)
     {
         const sFfmpegSubtitleTrack &t = m_stream_info.sub_tracks[i];
+        if (t.bitmap) continue;  /* bitmap subs can't be rendered (yet) */
         SubtitleTrack st;
-        st.language_code = t.language;
-        st.pid           = t.id;
-        st.type          = t.bitmap ? 1 : 0;
+        st.language_code   = t.language;
+        st.pid             = t.id;
+        st.type            = 2;  /* 0=DVB 1=teletext 2=text */
+        st.page_number     = 1;  /* ServiceInfo.py: 1 = embedded */
+        st.magazine_number = 0;
         list.push_back(st);
     }
     return 0;
@@ -1083,9 +1139,8 @@ int eServiceFfmpeg::getInfo(int w)
     case iServiceInformation::sAspect:          return m_aspect;
     case iServiceInformation::sFrameRate:       return m_framerate;
     case iServiceInformation::sProgressive:     return m_progressive ? 1 : 0;
-    case iServiceInformation::sCurrentTitle:    return m_current_audio_track;
-    case iServiceInformation::sTotalTitles:     return (int)m_stream_info.audio_tracks.size();
     case iServiceInformation::sBuffer:          return m_buffer_percentage;
+    case iServiceInformation::sVideoType:       return videoTypeFromCodec(m_stream_info.video.codec);
     }
     return iServiceInformation::resNA;
 }
@@ -1096,6 +1151,13 @@ std::string eServiceFfmpeg::getInfoString(int w)
     {
     case iServiceInformation::sServiceref:  return m_ref.toString();
     case iServiceInformation::sUser + 12:   return m_error_message;
+    case iServiceInformation::sTagTitle:    return m_stream_info.title;
+    case iServiceInformation::sTagVideoCodec: return m_stream_info.video.codec;
+    case iServiceInformation::sTagAudioCodec:
+        if (m_current_audio_track >= 0 &&
+            m_current_audio_track < (int)m_stream_info.audio_tracks.size())
+            return m_stream_info.audio_tracks[m_current_audio_track].codec;
+        return "";
     }
     if (!m_stream_info.audio_tracks.empty() && m_current_audio_track >= 0 &&
         m_current_audio_track < (int)m_stream_info.audio_tracks.size())
@@ -1105,6 +1167,12 @@ std::string eServiceFfmpeg::getInfoString(int w)
     }
     if (w == (iServiceInformation::sUser + 31)) return m_stream_info.video.codec;
     return "";
+}
+
+RESULT eServiceFfmpeg::getEvent(ePtr<eServiceEvent> &evt, int nownext)
+{
+    evt = nownext ? m_event_next : m_event_now;
+    return evt ? 0 : -1;
 }
 
 ePtr<iServiceInfoContainer> eServiceFfmpeg::getInfoObject(int w)

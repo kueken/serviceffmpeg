@@ -220,6 +220,7 @@ public:
 
     /* --- iServiceInformation --- */
     RESULT getName(std::string &name);
+    RESULT getEvent(ePtr<eServiceEvent> &evt, int nownext);
     int    getInfo(int w);
     std::string getInfoString(int w);
     ePtr<iServiceInfoContainer> getInfoObject(int w);
@@ -285,6 +286,7 @@ private:
 
     bool                        m_paused;
     bool                        m_buffering;
+    bool                        m_eof_sent;
     int                         m_buffer_percentage;
     pts_t                       m_last_position;
     pts_t                       m_duration;
