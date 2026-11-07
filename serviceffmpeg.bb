@@ -7,7 +7,7 @@ LIC_FILES_CHKSUM = "file://LICENSE;md5=b234ee4d69f5fce4486a80fdaf4a4263"
 # Local checkout during development:
 SRC_URI = "git://github.com/yourfork/serviceffmpeg.git;protocol=https;branch=main;name=serviceffmpeg"
 SRCREV = "${AUTOREV}"
-PV = "1.0.0+git${SRCPV}"
+PV = "2.0.0+git${SRCPV}"
 S = "${WORKDIR}/git"
 
 DEPENDS = " \
@@ -22,19 +22,19 @@ DEPENDS = " \
 
 RDEPENDS:${PN} = "enigma2 ffmpeg libass"
 
-inherit autotools pkgconfig pythonnative python3-compileall
-
+inherit autotools pkgconfig python3native python3-compileall
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
 PROVIDES += "virtual/enigma2-mediaservice"
 RPROVIDES:${PN} += "virtual-enigma2-mediaservice"
 
 EXTRA_OECONF = " \
-    BUILD_SYS=${BUILD_SYS} \
-    HOST_SYS=${HOST_SYS} \
     STAGING_INCDIR=${STAGING_INCDIR} \
     STAGING_LIBDIR=${STAGING_LIBDIR} \
 "
+
+CFLAGS:append:arm = " -DARM -mno-unaligned-access"
+CFLAGS:append:mipsel = " -DMIPSEL"
 
 do_install:append() {
     # Remove libtool archives and static libs - not needed for a plugin
@@ -49,7 +49,7 @@ FILES:${PN} = " \
 "
 
 # Cannot coexist with other media services
-RCONFLICTS:${PN} = "enigma2-plugin-systemplugins-servicemp3 \
-                    enigma2-plugin-systemplugins-servicehisilicon"
-RREPLACES:${PN}  = "enigma2-plugin-systemplugins-servicemp3 \
-                    enigma2-plugin-systemplugins-servicehisilicon"
+# RCONFLICTS:${PN} = "enigma2-plugin-systemplugins-servicemp3 \
+#                     enigma2-plugin-systemplugins-servicehisilicon"
+# RREPLACES:${PN}  = "enigma2-plugin-systemplugins-servicemp3 \
+#                     enigma2-plugin-systemplugins-servicehisilicon"

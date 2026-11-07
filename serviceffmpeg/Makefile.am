@@ -19,6 +19,7 @@ serviceffmpeg_la_CXXFLAGS = \
 
 serviceffmpeg_la_LIBADD = \
 	$(ENIGMA2_LIBS) \
+	$(FFMPEG_LIBS) \
 	$(PYTHON_LIBS)
 
 serviceffmpeg_la_LDFLAGS = \
@@ -32,9 +33,7 @@ bin_PROGRAMS = ffmpeg-player
 noinst_HEADERS = bcm_ioctls.h
 
 ffmpeg_player_SOURCES = \
-    main.cpp \
-    bcm_ioctls.h        # optional — Automake erkennt Headers
-                         # automatisch über noinst_HEADERS
+	main.cpp
 
 ffmpeg_player_CXXFLAGS = \
 	$(FFMPEG_CFLAGS) \

@@ -95,7 +95,7 @@ extern "C" {
 #define POSITION_REPORT_INTERVAL_MS 500
 
 /* PES Konstanten — aus exteplayer3/output/writer/common/pes.c */
-#define INVALID_PTS_VALUE           ((uint64_t)0x1FFFFFFFFLL)
+#define INVALID_PTS_VALUE           ((uint64_t)0x200000000ull)  /* writer.h canonical value */
 #define MAX_PES_PACKET_SIZE         65515
 #define MPEG_VIDEO_PES_START_CODE   0xE0
 #define MPEG_AUDIO_PES_START_CODE   0xC0
@@ -143,7 +143,6 @@ static video_stream_type_t codec_to_bcm_video(AVCodecID id)
  */
 static int bcm_stream_type_primary(video_stream_type_t t)
 {
-    /* Werte die auf manchen BCM-Plattformen abweichen */
     switch (t) {
     case STREAMTYPE_MPEG4_H265: return 7;
     case STREAMTYPE_VC1:        return 3;
@@ -155,7 +154,6 @@ static int bcm_stream_type_primary(video_stream_type_t t)
 }
 static int bcm_stream_type_secondary(video_stream_type_t t)
 {
-    /* Alternativer Wert für Dreambox-kompatible Treiber */
     switch (t) {
     case STREAMTYPE_MPEG4_H265: return 22;
     case STREAMTYPE_VC1:        return 16;
@@ -191,12 +189,6 @@ static audio_stream_type_t codec_to_bcm_audio(AVCodecID id)
     }
 }
 
-/*
- * LinuxDvbMapBypassMode equivalent.
- * Standardwerte: die meisten Typen sind identisch zum enum-Wert.
- * Ausnahmen sind EAC3/WMA/WMA_PRO/RAW — wieder primary/secondary.
- * Wir übergeben beide Varianten.
- */
 static int bcm_bypass_primary(audio_stream_type_t t)
 {
     switch (t) {
@@ -218,13 +210,20 @@ static int bcm_bypass_secondary(audio_stream_type_t t)
     }
 }
 
+/* Forward-declared control flags used by write_retry().
+ * Defined as part of PlayerState but needed here before that struct.
+ * write_retry() checks these to abort DVB writes on stop/seek. */
+static std::atomic<bool>    g_stop_requested{false};
+static std::atomic<int64_t> g_seek_target_ms{-1};
+
+/* NEU: play-Flag. Der Service sendet "play" über IPC; der Player
+ * startet die Wiedergabe erst, wenn das Flag gesetzt ist (max 10s Wartezeit).
+ * Damit ist der play-Befehl nicht mehr wirkungslos, und ein späterer
+ * verzögerter Start (Buffering) ist möglich. */
+static std::atomic<bool>    g_play_requested{false};
+
 /* ====================================================================
  * PES Header Builder
- * Direkte Portierung von exteplayer3/output/writer/common/pes.c
- * InsertPesHeader()
- *
- * pts = INVALID_PTS_VALUE → kein PTS
- * pic_start_code ≠ 0     → Fake Start Code Extension (H.264/HEVC)
  * ==================================================================== */
 static uint32_t InsertPesHeader(uint8_t *data, int32_t size,
                                 uint8_t stream_id, uint64_t pts,
@@ -237,10 +236,9 @@ static uint32_t InsertPesHeader(uint8_t *data, int32_t size,
     data[pos++] = 0x01;
     data[pos++] = stream_id;
 
-    /* PES_packet_length */
     int32_t plen = size;
     if (plen > 0) {
-        plen += 3; /* flags */
+        plen += 3;
         if (pts != INVALID_PTS_VALUE) plen += 5;
         if (pic_start_code)           plen += 5;
     }
@@ -248,13 +246,8 @@ static uint32_t InsertPesHeader(uint8_t *data, int32_t size,
     data[pos++] = (plen >> 8) & 0xFF;
     data[pos++] = plen & 0xFF;
 
-    /* flags byte 1: 0x80 = marker */
     data[pos++] = 0x80;
-
-    /* flags byte 2: PTS_DTS_flags */
     data[pos++] = (pts != INVALID_PTS_VALUE) ? 0x80 : 0x00;
-
-    /* PES_header_data_length */
     data[pos++] = (pts != INVALID_PTS_VALUE) ? 0x05 : 0x00;
 
     if (pts != INVALID_PTS_VALUE) {
@@ -265,7 +258,6 @@ static uint32_t InsertPesHeader(uint8_t *data, int32_t size,
         data[pos++] = (uint8_t)(0x01 | ((pts & 0x7F) << 1));
     }
 
-    /* pic_start_code / Fake Start Code Extension */
     if (pic_start_code) {
         data[pos++] = 0x00;
         data[pos++] = 0x00;
@@ -285,20 +277,53 @@ static void UpdatePesHeaderPayloadSize(uint8_t *data, int32_t size)
 }
 
 /* ====================================================================
- * Write mit Retry (wie writev_with_retry in exteplayer3/writer.c)
+ * Write mit Retry
  * ==================================================================== */
 static ssize_t write_retry(int fd, const void *buf, size_t count)
 {
-    const uint8_t *p = (const uint8_t*)buf;
-    size_t remain = count;
-    while (remain > 0) {
-        ssize_t ret = write(fd, p, remain);
-        if (ret < 0) {
-            if (errno == EINTR || errno == EAGAIN) { usleep(1000); continue; }
+    const uint8_t *p   = (const uint8_t *)buf;
+    size_t          rem = count;
+
+    while (rem > 0)
+    {
+        if (g_stop_requested.load())
+            return -1;
+
+        fd_set wfds;
+        FD_ZERO(&wfds);
+        FD_SET(fd, &wfds);
+        struct timeval tv = { 0, 100000 };
+
+        int sel = select(fd + 1, NULL, &wfds, NULL, &tv);
+        if (sel < 0)
+        {
+            if (errno == EINTR) continue;
+            fprintf(stderr, "[player] write fd=%d select error: %s\n",
+                    fd, strerror(errno));
             return -1;
         }
-        p += ret; remain -= ret;
-        if (remain > 0) usleep(1000);
+        if (sel == 0)
+            continue;
+
+        if (!FD_ISSET(fd, &wfds))
+            continue;
+
+        ssize_t ret = write(fd, p, rem);
+        if (ret < 0)
+        {
+            if (errno == EINTR || errno == EAGAIN) continue;
+            fprintf(stderr, "[player] write fd=%d failed: %s\n",
+                    fd, strerror(errno));
+            return -1;
+        }
+        if (ret == 0)
+        {
+            usleep(10000);
+            continue;
+        }
+
+        p   += ret;
+        rem -= ret;
     }
     return (ssize_t)count;
 }
@@ -306,17 +331,52 @@ static ssize_t write_retry(int fd, const void *buf, size_t count)
 static ssize_t writev_retry(int fd, const struct iovec *iov, int iovcnt)
 {
     ssize_t total = 0;
-    for (int i = 0; i < iovcnt; i++) {
-        ssize_t ret = write_retry(fd, iov[i].iov_base, iov[i].iov_len);
-        if (ret < 0) return -1;
-        total += ret;
+    for (int i = 0; i < iovcnt; i++)
+    {
+        if (write_retry(fd, iov[i].iov_base, iov[i].iov_len) < 0)
+            return -1;
+        total += (ssize_t)iov[i].iov_len;
     }
     return total;
 }
 
 /* ====================================================================
+ * Track / State
+ * ==================================================================== */
+struct AudioTrack{int stream_idx,pid,channels,samplerate,bitrate;
+                  std::string lang,codec; AVCodecID codec_id;};
+struct SubTrack  {int stream_idx; std::string lang,codec; bool bitmap;};
+
+struct PlayerState {
+    int ipc_fd; std::string recv_buf,uri,useragent,extra_headers; int buffer_size;
+    AVFormatContext *fmt_ctx;
+    int video_stream_idx,audio_stream_idx,sub_stream_idx;
+    std::vector<AudioTrack> audio_tracks;
+    std::vector<SubTrack>   sub_tracks;
+    int active_audio_track;
+    std::atomic<bool>    running,paused;
+    std::atomic<int>     speed;
+    pthread_mutex_t seek_mutex;
+    int dvb_video_fd,dvb_audio_fd;
+    bool hw_sink_available;
+    AVCodecID active_video_codec_id,active_audio_codec_id;
+    uint8_t *video_extra; int video_extra_size;
+    AVFormatContext *record_ctx; bool recording; pthread_mutex_t record_mutex;
+    int64_t duration_ms,position_ms;
+    bool is_live,seekable;
+    PlayerState():ipc_fd(-1),buffer_size(BUFFER_SIZE_DEFAULT),fmt_ctx(NULL),
+        video_stream_idx(-1),audio_stream_idx(-1),sub_stream_idx(-1),
+        active_audio_track(-1),running(false),paused(false),
+        speed(0),dvb_video_fd(-1),dvb_audio_fd(-1),
+        hw_sink_available(false),
+        active_video_codec_id(AV_CODEC_ID_NONE),active_audio_codec_id(AV_CODEC_ID_NONE),
+        video_extra(NULL),video_extra_size(0),record_ctx(NULL),recording(false),
+        duration_ms(0),position_ms(0),is_live(false),seekable(false)
+    { pthread_mutex_init(&seek_mutex,NULL); pthread_mutex_init(&record_mutex,NULL); }
+} G;
+
+/* ====================================================================
  * H.264 Writer
- * Portiert aus exteplayer3/output/writer/mipsel/h264.c
  * ==================================================================== */
 struct H264State {
     bool     initialHeader;
@@ -336,16 +396,15 @@ static void h264_prepare_codec_data(const uint8_t *extra, int extra_size)
     g_h264.nalLengthBytes=(extra[4]&0x03)+1;
     static const uint8_t sc[]={0,0,0,1};
     uint8_t tmp[2048]; uint32_t tmp_len=0;
-    /* SPS */
     uint16_t sps_len=(extra[6]<<8)|extra[7];
     if(extra_size<8+(int)sps_len) return;
+    if(tmp_len+4+(uint32_t)sps_len>sizeof(tmp)) return;
     memcpy(tmp+tmp_len,sc,4);tmp_len+=4;
     memcpy(tmp+tmp_len,extra+8,sps_len);tmp_len+=sps_len;
-    /* PPS */
     int pp=8+sps_len;
-    if(extra_size>pp+2){
+    if(extra_size>=pp+3){
         uint16_t pps_len=(extra[pp+1]<<8)|extra[pp+2]; pp+=3;
-        if(extra_size>=pp+(int)pps_len){
+        if(extra_size>=pp+(int)pps_len && tmp_len+4+(uint32_t)pps_len<=sizeof(tmp)){
             memcpy(tmp+tmp_len,sc,4);tmp_len+=4;
             memcpy(tmp+tmp_len,extra+pp,pps_len);tmp_len+=pps_len;
         }
@@ -354,6 +413,7 @@ static void h264_prepare_codec_data(const uint8_t *extra, int extra_size)
     g_h264.codecData=(uint8_t*)malloc(tmp_len);
     g_h264.codecDataLen=tmp_len;
     if(g_h264.codecData) memcpy(g_h264.codecData,tmp,tmp_len);
+    else g_h264.codecDataLen=0;
 }
 
 static bool write_video_h264(int fd, const uint8_t *data, int size,
@@ -363,13 +423,11 @@ static bool write_video_h264(int fd, const uint8_t *data, int size,
     static const uint8_t sc[]={0,0,0,1};
     uint8_t PesHeader[PES_MAX_HEADER_SIZE];
 
-    /* Fake Start Code: version(8bit) | PES_VERSION_FAKE_START_CODE(0x45) */
-    int32_t fake_sc = (0 << 8) | 0x45;
+    int32_t fake_sc = (0 << 8) | 0x31;
 
     bool is_annexb=(size>3)&&(data[0]==0&&data[1]==0&&data[2]==0&&data[3]==1);
 
     if(is_annexb) {
-        /* Prüfe ob SPS im Stream vorhanden */
         if(!g_h264.sps_pps_in_stream) {
             for(int i=0;i<(int)size-5&&i<64;i++) {
                 if(data[i]==0&&data[i+1]==0&&data[i+2]==0&&data[i+3]==1&&
@@ -378,7 +436,7 @@ static bool write_video_h264(int fd, const uint8_t *data, int size,
                 }
             }
         }
-        struct iovec iov[3]; int ic=0;
+        struct iovec iov[4]; int ic=0;
         iov[ic].iov_base=PesHeader;
         iov[ic++].iov_len=InsertPesHeader(PesHeader,-1,MPEG_VIDEO_PES_START_CODE,pts,fake_sc);
         if(g_h264.initialHeader&&!g_h264.sps_pps_in_stream&&g_h264.codecData){
@@ -389,13 +447,12 @@ static bool write_video_h264(int fd, const uint8_t *data, int size,
         return writev_retry(fd,iov,ic)>=0;
     }
 
-    /* AVCC: Prepare codec data if not done */
     if(!g_h264.codecData && extra) h264_prepare_codec_data(extra,extra_size);
     if(!g_h264.codecData) return false;
 
     struct iovec iov[64]; int ic=0;
     iov[ic].iov_base=PesHeader;
-    iov[ic++].iov_len=InsertPesHeader(PesHeader,-1,MPEG_VIDEO_PES_START_CODE,pts,fake_sc);
+    iov[ic++].iov_len=InsertPesHeader(PesHeader,-1,MPEG_VIDEO_PES_START_CODE,pts,0);
     if(g_h264.initialHeader){
         g_h264.initialHeader=false;
         iov[ic].iov_base=g_h264.codecData; iov[ic++].iov_len=g_h264.codecDataLen;
@@ -414,7 +471,7 @@ static bool write_video_h264(int fd, const uint8_t *data, int size,
 }
 
 /* ====================================================================
- * H.265 Writer (portiert aus h265.c)
+ * H.265 Writer
  * ==================================================================== */
 struct H265State {
     bool     initialHeader;
@@ -424,6 +481,59 @@ struct H265State {
     ~H265State(){if(codecData)free(codecData);}
     void reset(){initialHeader=true;}
 } g_h265;
+
+/* ====================================================================
+ * AAC ADTS State
+ * ==================================================================== */
+struct AACState {
+    uint8_t adts_header[7];
+    bool    has_header;
+    bool    stream_has_adts;
+    AACState():has_header(false),stream_has_adts(false){ memset(adts_header,0,7); }
+} g_aac;
+
+static void aac_build_adts_header(const uint8_t *extra, int extra_size,
+                                   int sample_rate, int channels)
+{
+    static const int sf_table[] = {
+        96000,88200,64000,48000,44100,32000,24000,22050,
+        16000,12000,11025,8000,7350,0,0,0
+    };
+
+    int profile = 1;
+    int sf_idx  = 4;
+    int ch_cfg  = (channels > 0 && channels < 8) ? channels : 2;
+
+    if (extra && extra_size >= 2)
+    {
+        int aot   = (extra[0] >> 3) & 0x1F;
+        sf_idx    = ((extra[0] & 0x07) << 1) | ((extra[1] >> 7) & 0x01);
+        ch_cfg    = (extra[1] >> 3) & 0x0F;
+        profile   = (aot > 0) ? aot - 1 : 1;
+        if (profile > 3) profile = 1;
+        fprintf(stderr, "[player] AAC from extradata: aot=%d sf_idx=%d ch=%d\n",
+                aot, sf_idx, ch_cfg);
+    }
+    else
+    {
+        for (int i = 0; i < 16; i++) {
+            if (sf_table[i] == sample_rate) { sf_idx = i; break; }
+        }
+        fprintf(stderr, "[player] AAC from stream params: profile=%d sf=%d ch=%d\n",
+                profile, sample_rate, ch_cfg);
+    }
+
+    g_aac.adts_header[0] = 0xFF;
+    g_aac.adts_header[1] = 0xF1;
+    g_aac.adts_header[2] = (uint8_t)(((profile & 0x3) << 6) |
+                                      ((sf_idx  & 0xF) << 2) |
+                                      ((ch_cfg  >> 2) & 0x1));
+    g_aac.adts_header[3] = (uint8_t)(((ch_cfg & 0x3) << 6));
+    g_aac.adts_header[4] = 0x00;
+    g_aac.adts_header[5] = 0x1F;
+    g_aac.adts_header[6] = 0xFC;
+    g_aac.has_header = true;
+}
 
 static void h265_prepare_codec_data(const uint8_t *extra, int extra_size)
 {
@@ -435,7 +545,7 @@ static void h265_prepare_codec_data(const uint8_t *extra, int extra_size)
     int num_arrays=extra[pos++];
     for(int a=0;a<num_arrays&&pos<extra_size;a++){
         if(pos+3>extra_size) break;
-        pos++; /* nal_type */
+        pos++;
         int num_nalus=(extra[pos]<<8)|extra[pos+1]; pos+=2;
         for(int n=0;n<num_nalus&&pos<extra_size;n++){
             if(pos+2>extra_size) break;
@@ -451,22 +561,22 @@ static void h265_prepare_codec_data(const uint8_t *extra, int extra_size)
     g_h265.codecData=(uint8_t*)malloc(tmp_len);
     g_h265.codecDataLen=tmp_len;
     if(g_h265.codecData) memcpy(g_h265.codecData,tmp,tmp_len);
+    else g_h265.codecDataLen=0;
 }
 
 static bool write_video_h265(int fd, const uint8_t *data, int size,
                               uint64_t pts, const uint8_t *extra, int extra_size)
 {
     if(fd<0||!data||size<=0) return false;
-    static const uint8_t sc[]={0,0,0,1};
     static uint8_t sc_buf[]={0,0,0,1};
     uint8_t PesHeader[PES_MAX_HEADER_SIZE];
-    int32_t fake_sc=(0<<8)|0x45;
+    int32_t fake_sc=(0<<8)|0x31;
 
     if(!g_h265.codecData && extra) h265_prepare_codec_data(extra,extra_size);
 
     bool is_annexb=(size>3)&&(data[0]==0&&data[1]==0&&data[2]==0&&data[3]==1);
 
-    struct iovec iov[8]; int ic=0;
+    struct iovec iov[64]; int ic=0;
     iov[ic].iov_base=PesHeader;
     iov[ic++].iov_len=InsertPesHeader(PesHeader,-1,MPEG_VIDEO_PES_START_CODE,pts,fake_sc);
     if(g_h265.initialHeader&&g_h265.codecData){
@@ -475,7 +585,7 @@ static bool write_video_h265(int fd, const uint8_t *data, int size,
     }
     if(!is_annexb&&size>4){
         uint32_t pos=0;
-        while(pos+4<=(uint32_t)size&&ic+2<8){
+        while(pos+4<=(uint32_t)size&&ic+2<64){
             uint32_t nl=AV_RB32(data+pos); pos+=4;
             if(pos+nl>(uint32_t)size) break;
             iov[ic].iov_base=sc_buf; iov[ic++].iov_len=4;
@@ -489,7 +599,7 @@ static bool write_video_h265(int fd, const uint8_t *data, int size,
 }
 
 /* ====================================================================
- * MPEG-2 Video Writer (portiert aus mpeg2.c)
+ * MPEG-2 Video Writer
  * ==================================================================== */
 static bool g_mpeg2_must_send_header=true;
 
@@ -501,7 +611,6 @@ static bool write_video_mpeg2(int fd, const uint8_t *data, int size,
     struct iovec iov[4]; int ic=0;
     iov[ic].iov_base=PesHeader; iov[ic++].iov_len=0;
 
-    /* Sequence header vor GOP einfügen */
     if(extra&&extra_size>0&&g_mpeg2_must_send_header){
         for(int pos=0;pos<=size-4;pos++){
             if(data[pos]==0&&data[pos+1]==0&&data[pos+2]==1&&data[pos+3]==0xB8){
@@ -517,15 +626,170 @@ static bool write_video_mpeg2(int fd, const uint8_t *data, int size,
 
     int payload=0; for(int i=1;i<ic;i++) payload+=(int)iov[i].iov_len;
     iov[0].iov_len=InsertPesHeader(PesHeader,payload,MPEG_VIDEO_PES_START_CODE,pts,0);
-    /* MPEG-2 braucht PES_PRIVATE_DATA bit */
     PesHeader[6]|=0x01;
     UpdatePesHeaderPayloadSize(PesHeader,(int32_t)(payload+iov[0].iov_len-6));
     return writev_retry(fd,iov,ic)>=0;
 }
 
 /* ====================================================================
- * Generischer Video Writer (MPEG4, VC1, VP, etc.)
- * Portiert aus mpeg4.c
+ * VC1 Writer
+ * ==================================================================== */
+static const uint8_t VC1_FRAME_START_CODE[4] = {0,0,1,0x0D};
+static bool g_vc1_initial = true;
+
+static bool write_video_vc1(int fd, const uint8_t *data, int size,
+                             uint64_t pts, const uint8_t *extra, int extra_size)
+{
+    if(fd<0||!data||size<=0) return false;
+    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 8];
+    struct iovec iov[5]; int ic=0;
+    uint32_t PacketLength = 0;
+
+    iov[ic++] = {PesHeader, 0};
+
+    if(g_vc1_initial && extra && extra_size > 0)
+    {
+        g_vc1_initial = false;
+        static uint8_t codec_buf[2048];
+        int codec_len = extra_size + 8;
+        if(codec_len <= (int)sizeof(codec_buf))
+        {
+            memset(codec_buf, 0, 8);
+            memcpy(codec_buf + 8, extra, extra_size);
+            video_codec_data_t vcd;
+            vcd.length = codec_len;
+            vcd.data   = codec_buf;
+            if(ioctl(fd, VIDEO_SET_CODEC_DATA, &vcd) != 0)
+            {
+                iov[ic].iov_base = codec_buf;
+                iov[ic++].iov_len = codec_len;
+                PacketLength += codec_len;
+            }
+        }
+    }
+
+    bool need_fsc = (size < 4 ||
+                     memcmp(data, VC1_FRAME_START_CODE, 4) != 0);
+    if(need_fsc)
+    {
+        iov[ic].iov_base = (void*)VC1_FRAME_START_CODE;
+        iov[ic++].iov_len = 4;
+        PacketLength += 4;
+    }
+
+    iov[ic].iov_base = (void*)data;
+    iov[ic++].iov_len = size;
+    PacketLength += size;
+
+    iov[0].iov_len = InsertPesHeader(PesHeader, PacketLength,
+                                     MPEG_VIDEO_PES_START_CODE, pts, 0);
+    PesHeader[6] |= 1;
+    if(need_fsc)
+    {
+        memcpy(PesHeader + iov[0].iov_len, VC1_FRAME_START_CODE, 4);
+        iov[0].iov_len += 4;
+        for(int i=1; i<ic-1; i++) iov[i]=iov[i+1];
+        --ic;
+    }
+    return writev_retry(fd, iov, ic) >= 0;
+}
+
+/* ====================================================================
+ * WMV Writer
+ * ==================================================================== */
+static bool g_wmv_initial = true;
+
+static bool write_video_wmv(int fd, const uint8_t *data, int size,
+                             uint64_t pts, const uint8_t *extra, int extra_size,
+                             int width, int height)
+{
+    if(fd<0||!data||size<=0) return false;
+    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 8];
+    struct iovec iov[5]; int ic=0;
+    uint32_t PacketLength = 0;
+
+    iov[ic++] = {PesHeader, 0};
+
+    if(g_wmv_initial)
+    {
+        g_wmv_initial = false;
+        static uint8_t wmv_codec[33];
+        memset(wmv_codec, 0, 33);
+        wmv_codec[18] = (width  >> 8) & 0xFF;
+        wmv_codec[19] = width  & 0xFF;
+        wmv_codec[20] = (height >> 8) & 0xFF;
+        wmv_codec[21] = height & 0xFF;
+        int copy = (extra_size > 4) ? 4 : extra_size;
+        if(extra && copy > 0) memcpy(wmv_codec + 22, extra, copy);
+
+        video_codec_data_t vcd;
+        vcd.length = 33;
+        vcd.data   = wmv_codec;
+        if(ioctl(fd, VIDEO_SET_CODEC_DATA, &vcd) != 0)
+        {
+            iov[ic].iov_base = wmv_codec;
+            iov[ic++].iov_len = 33;
+            PacketLength += 33;
+        }
+    }
+
+    bool need_fsc = (size < 4 ||
+                     memcmp(data, VC1_FRAME_START_CODE, 4) != 0);
+    if(need_fsc) PacketLength += 4;
+
+    iov[ic].iov_base = (void*)data;
+    iov[ic++].iov_len = size;
+    PacketLength += size;
+
+    iov[0].iov_len = InsertPesHeader(PesHeader, PacketLength,
+                                     MPEG_VIDEO_PES_START_CODE, pts, 0);
+    PesHeader[6] |= 1;
+    if(need_fsc)
+    {
+        memcpy(PesHeader + iov[0].iov_len, VC1_FRAME_START_CODE, 4);
+        iov[0].iov_len += 4;
+    }
+    return writev_retry(fd, iov, ic) >= 0;
+}
+
+/* ====================================================================
+ * VP6/VP8/VP9 Writer
+ * ==================================================================== */
+static bool write_video_vp(int fd, const uint8_t *data, int size,
+                            uint64_t pts, bool is_vp6, bool is_vp9)
+{
+    if(fd<0||!data||size<=0) return false;
+    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 32];
+
+    uint64_t use_pts = pts;
+
+    uint32_t pes_hdr_len = InsertPesHeader(PesHeader, size,
+                                           MPEG_VIDEO_PES_START_CODE, use_pts, 0);
+
+    uint32_t bcmv_len = size + 4 + 6;
+    if(pes_hdr_len + 4 + 6 + 1 > sizeof(PesHeader)) return false;
+    memcpy(PesHeader + pes_hdr_len, "BCMV", 4);
+    pes_hdr_len += 4;
+    if(is_vp6) ++bcmv_len;
+
+    PesHeader[pes_hdr_len++] = (bcmv_len >> 24) & 0xFF;
+    PesHeader[pes_hdr_len++] = (bcmv_len >> 16) & 0xFF;
+    PesHeader[pes_hdr_len++] = (bcmv_len >>  8) & 0xFF;
+    PesHeader[pes_hdr_len++] = (bcmv_len      ) & 0xFF;
+    PesHeader[pes_hdr_len++] = 0;
+    PesHeader[pes_hdr_len++] = (!is_vp9) ? 0 : 1;
+    if(is_vp6) PesHeader[pes_hdr_len++] = 0;
+
+    int32_t payload_len = size + pes_hdr_len - 6;
+    UpdatePesHeaderPayloadSize(PesHeader, payload_len);
+
+    if(write_retry(fd, PesHeader, pes_hdr_len) < 0) return false;
+    if(write_retry(fd, data, size) < 0) return false;
+    return true;
+}
+
+/* ====================================================================
+ * Generischer Video Writer
  * ==================================================================== */
 static bool g_mpeg4_initial_header=true;
 
@@ -534,7 +798,7 @@ static bool write_video_generic(int fd, const uint8_t *data, int size,
 {
     if(fd<0||!data||size<=0) return false;
     uint8_t PesHeader[PES_MAX_HEADER_SIZE];
-    struct iovec iov[3]; int ic=0;
+    struct iovec iov[4]; int ic=0;
     iov[ic].iov_base=PesHeader; iov[ic++].iov_len=0;
     int payload=size;
     if(g_mpeg4_initial_header&&extra&&extra_size>0){
@@ -550,17 +814,34 @@ static bool write_video_generic(int fd, const uint8_t *data, int size,
 /* ====================================================================
  * Audio Writers
  * ==================================================================== */
-static const uint8_t DefaultADTSHeader[]={0xFF,0xF1,0x50,0x80,0x00,0x1F,0xFC};
-
 static bool write_audio_aac(int fd, const uint8_t *data, int size, uint64_t pts)
 {
     if(fd<0||!data||size<=0) return false;
     uint8_t PesHeader[PES_MAX_HEADER_SIZE];
-    bool has_adts=(size>1)&&((data[0]==0xFF)&&((data[1]&0xF0)==0xF0));
-    struct iovec iov[3]; int ic=0;
+    bool has_adts = (size>1) && (data[0]==0xFF) && ((data[1]&0xF0)==0xF0);
+    struct iovec iov[4]; int ic=0;
     iov[ic].iov_base=PesHeader; iov[ic++].iov_len=0;
     int payload=size;
-    if(!has_adts){ iov[ic].iov_base=(void*)DefaultADTSHeader; iov[ic++].iov_len=7; payload+=7; }
+    if(!has_adts)
+    {
+        static uint8_t adts[7];
+        if(g_aac.has_header)
+        {
+            memcpy(adts, g_aac.adts_header, 7);
+        }
+        else
+        {
+            adts[0]=0xFF; adts[1]=0xF1; adts[2]=0x50;
+            adts[3]=0x80; adts[4]=0x00; adts[5]=0x1F; adts[6]=0xFC;
+        }
+        uint16_t frame_len = (uint16_t)(size + 7);
+        adts[3] = (adts[3] & 0xFC) | ((frame_len >> 11) & 0x03);
+        adts[4] = (frame_len >> 3) & 0xFF;
+        adts[5] = ((frame_len & 0x07) << 5) | 0x1F;
+        adts[6] = 0xFC;
+        iov[ic].iov_base = adts; iov[ic++].iov_len = 7;
+        payload += 7;
+    }
     iov[ic].iov_base=(void*)data; iov[ic++].iov_len=size;
     iov[0].iov_len=InsertPesHeader(PesHeader,payload,MPEG_AUDIO_PES_START_CODE,pts,0);
     return writev_retry(fd,iov,ic)>=0;
@@ -600,6 +881,17 @@ static bool write_video_packet(int fd, AVCodecID cid,
     case AV_CODEC_ID_HEVC:       return write_video_h265(fd,data,size,pts,extra,extra_size);
     case AV_CODEC_ID_MPEG1VIDEO:
     case AV_CODEC_ID_MPEG2VIDEO: return write_video_mpeg2(fd,data,size,pts,extra,extra_size);
+    case AV_CODEC_ID_VC1:        return write_video_vc1(fd,data,size,pts,extra,extra_size);
+    case AV_CODEC_ID_WMV3:       return write_video_wmv(fd,data,size,pts,extra,extra_size,
+                                     (G.video_stream_idx>=0 ?
+                                      G.fmt_ctx->streams[G.video_stream_idx]->codecpar->width : 0),
+                                     (G.video_stream_idx>=0 ?
+                                      G.fmt_ctx->streams[G.video_stream_idx]->codecpar->height : 0));
+    case AV_CODEC_ID_VP6:
+    case AV_CODEC_ID_VP6F:
+    case AV_CODEC_ID_VP6A:       return write_video_vp(fd,data,size,pts,true,false);
+    case AV_CODEC_ID_VP8:        return write_video_vp(fd,data,size,pts,false,false);
+    case AV_CODEC_ID_VP9:        return write_video_vp(fd,data,size,pts,false,true);
     default:                     return write_video_generic(fd,data,size,pts,extra,extra_size);
     }
 }
@@ -610,9 +902,11 @@ static bool write_audio_packet(int fd, AVCodecID cid,
     switch(cid){
     case AV_CODEC_ID_AAC:
     case AV_CODEC_ID_AAC_LATM:  return write_audio_aac(fd,data,size,pts);
-    case AV_CODEC_ID_MP2:
-    case AV_CODEC_ID_MP3:       return write_audio_mpeg(fd,data,size,pts);
-    default:                    return write_audio_private(fd,data,size,pts);
+    case AV_CODEC_ID_PCM_S16LE:
+    case AV_CODEC_ID_PCM_S16BE:
+    case AV_CODEC_ID_PCM_S24LE:
+    case AV_CODEC_ID_PCM_S24BE: return write_audio_private(fd,data,size,pts);
+    default:                    return write_audio_mpeg(fd,data,size,pts);
     }
 }
 
@@ -633,64 +927,21 @@ static long long json_get_int(const std::string &j, const std::string &k)
   return strtoll(j.c_str()+p+n.length(),NULL,10); }
 
 /* ====================================================================
- * Track / State
- * ==================================================================== */
-struct AudioTrack{int stream_idx,pid,channels,samplerate,bitrate;
-                  std::string lang,codec; AVCodecID codec_id;};
-struct SubTrack  {int stream_idx; std::string lang,codec; bool bitmap;};
-
-struct PlayerState {
-    int ipc_fd; std::string recv_buf,uri,useragent,extra_headers; int buffer_size;
-    AVFormatContext *fmt_ctx;
-    int video_stream_idx,audio_stream_idx,sub_stream_idx;
-    std::vector<AudioTrack> audio_tracks;
-    std::vector<SubTrack>   sub_tracks;
-    int active_audio_track;
-    std::atomic<bool>    running,paused,stop_requested;
-    std::atomic<int>     speed;
-    std::atomic<int64_t> seek_target_ms;
-    pthread_mutex_t seek_mutex;
-    int dvb_video_fd,dvb_audio_fd;
-    bool hw_sink_available;
-    AVCodecID active_video_codec_id,active_audio_codec_id;
-    uint8_t *video_extra; int video_extra_size;
-    AVFormatContext *record_ctx; bool recording; pthread_mutex_t record_mutex;
-    int64_t duration_ms,position_ms;
-    bool is_live,seekable;
-    PlayerState():ipc_fd(-1),buffer_size(BUFFER_SIZE_DEFAULT),fmt_ctx(NULL),
-        video_stream_idx(-1),audio_stream_idx(-1),sub_stream_idx(-1),
-        active_audio_track(-1),running(false),paused(false),stop_requested(false),
-        speed(0),seek_target_ms(-1),dvb_video_fd(-1),dvb_audio_fd(-1),
-        hw_sink_available(false),
-        active_video_codec_id(AV_CODEC_ID_NONE),active_audio_codec_id(AV_CODEC_ID_NONE),
-        video_extra(NULL),video_extra_size(0),record_ctx(NULL),recording(false),
-        duration_ms(0),position_ms(0),is_live(false),seekable(false)
-    { pthread_mutex_init(&seek_mutex,NULL); pthread_mutex_init(&record_mutex,NULL); }
-} G;
-
-/* ====================================================================
  * IPC
  * ==================================================================== */
 static void ipc_send(const std::string &evt, const std::string &params="")
-{ if(G.ipc_fd<0)return; std::string m="{\"evt\":\""+evt+"\"";
-  if(!params.empty())m+=","+params; m+="}\n"; write(G.ipc_fd,m.c_str(),m.length()); }
+{
+    if(G.ipc_fd<0) return;
+    std::string m="{\"evt\":\""+evt+"\"";
+    if(!params.empty()) m+=","+params;
+    m+="}\n";
+    write(G.ipc_fd,m.c_str(),m.length());
+}
 static void ipc_send_error(int c,const std::string &m)
 { ipc_send("error",jint("code",c)+","+jstr("msg",m)); }
 
 /* ====================================================================
- * DVB Sink — korrekte ioctl-Reihenfolge aus linuxdvb_mipsel.c
- *
- * LinuxDvbOpen() Reihenfolge:
- *   video: CLEAR_BUFFER → SELECT_SOURCE(MEMORY) → FREEZE
- *   audio: CLEAR_BUFFER → SELECT_SOURCE(MEMORY) → PAUSE
- *
- * LinuxDvbPlay() Reihenfolge:
- *   video: SET_STREAMTYPE → VIDEO_PLAY → VIDEO_CONTINUE → CLEAR_BUFFER
- *   audio: SET_BYPASS_MODE → AUDIO_PLAY → AUDIO_CONTINUE
- *
- * LinuxDvbStop() Reihenfolge:
- *   video: CLEAR_BUFFER → STOP → SELECT_SOURCE(DEMUX)  ← wichtig!
- *   audio: CLEAR_BUFFER → STOP → SELECT_SOURCE(DEMUX)
+ * DVB Sink
  * ==================================================================== */
 static bool open_dvb_sink()
 {
@@ -704,7 +955,11 @@ static bool open_dvb_sink()
         return false;
     }
 
-    /* VIDEO: CLEAR → SELECT_SOURCE(MEMORY) → FREEZE */
+    ioctl(G.dvb_video_fd, VIDEO_STOP);
+    ioctl(G.dvb_video_fd, VIDEO_SELECT_SOURCE, (void*)VIDEO_SOURCE_DEMUX);
+    ioctl(G.dvb_audio_fd, AUDIO_STOP);
+    ioctl(G.dvb_audio_fd, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX);
+
     if(ioctl(G.dvb_video_fd,VIDEO_CLEAR_BUFFER)==-1)
         fprintf(stderr,"[player] VIDEO_CLEAR_BUFFER: %s\n",strerror(errno));
     if(ioctl(G.dvb_video_fd,VIDEO_SELECT_SOURCE,(void*)VIDEO_SOURCE_MEMORY)==-1)
@@ -712,7 +967,6 @@ static bool open_dvb_sink()
     if(ioctl(G.dvb_video_fd,VIDEO_FREEZE)==-1)
         fprintf(stderr,"[player] VIDEO_FREEZE: %s\n",strerror(errno));
 
-    /* AUDIO: CLEAR → SELECT_SOURCE(MEMORY) → PAUSE */
     if(ioctl(G.dvb_audio_fd,AUDIO_CLEAR_BUFFER)==-1)
         fprintf(stderr,"[player] AUDIO_CLEAR_BUFFER: %s\n",strerror(errno));
     if(ioctl(G.dvb_audio_fd,AUDIO_SELECT_SOURCE,AUDIO_SOURCE_MEMORY)==-1)
@@ -735,13 +989,11 @@ static void configure_dvb_video_codec()
         G.video_extra_size=vs->codecpar->extradata_size;
     }
 
-    /* Codec-Daten vorbereiten */
     if(cid==AV_CODEC_ID_H264&&G.video_extra)
         h264_prepare_codec_data(G.video_extra,G.video_extra_size);
     else if(cid==AV_CODEC_ID_HEVC&&G.video_extra)
         h265_prepare_codec_data(G.video_extra,G.video_extra_size);
 
-    /* VIDEO_SET_STREAMTYPE: primary, dann secondary probieren */
     video_stream_type_t t=codec_to_bcm_video(cid);
     int ret=ioctl(G.dvb_video_fd,VIDEO_SET_STREAMTYPE,bcm_stream_type_primary(t));
     if(ret<0)
@@ -751,7 +1003,6 @@ static void configure_dvb_video_codec()
     else
         fprintf(stderr,"[player] VIDEO_SET_STREAMTYPE=%d (%s)\n",(int)t,avcodec_get_name(cid));
 
-    /* VIDEO_PLAY → CONTINUE → CLEAR */
     if(ioctl(G.dvb_video_fd,VIDEO_PLAY)!=0)
         fprintf(stderr,"[player] VIDEO_PLAY: %s\n",strerror(errno));
     if(ioctl(G.dvb_video_fd,VIDEO_CONTINUE)==-1)
@@ -764,6 +1015,16 @@ static void configure_dvb_audio_codec(AVCodecID cid)
 {
     if(G.dvb_audio_fd<0) return;
     G.active_audio_codec_id=cid;
+
+    if((cid==AV_CODEC_ID_AAC || cid==AV_CODEC_ID_AAC_LATM)
+       && G.audio_stream_idx>=0 && G.fmt_ctx)
+    {
+        AVStream *as_=G.fmt_ctx->streams[G.audio_stream_idx];
+        aac_build_adts_header(as_->codecpar->extradata,
+                              as_->codecpar->extradata_size,
+                              as_->codecpar->sample_rate,
+                              as_->codecpar->ch_layout.nb_channels);
+    }
 
     audio_stream_type_t t=codec_to_bcm_audio(cid);
     int ret=ioctl(G.dvb_audio_fd,AUDIO_SET_BYPASS_MODE,bcm_bypass_primary(t));
@@ -783,19 +1044,16 @@ static void configure_dvb_audio_codec(AVCodecID cid)
 static void close_dvb_sink()
 {
     if(G.dvb_video_fd>=0){
-        ioctl(G.dvb_video_fd,VIDEO_CLEAR_BUFFER);
-        ioctl(G.dvb_video_fd,VIDEO_STOP);
-        ioctl(G.dvb_video_fd,VIDEO_SLOWMOTION,0);
-        ioctl(G.dvb_video_fd,VIDEO_FAST_FORWARD,0);
-        /* Zurück auf Demux-Quelle — Live-TV muss danach funktionieren */
-        ioctl(G.dvb_video_fd,VIDEO_SELECT_SOURCE,(void*)VIDEO_SOURCE_DEMUX);
-        close(G.dvb_video_fd); G.dvb_video_fd=-1;
+        ioctl(G.dvb_video_fd, VIDEO_CLEAR_BUFFER);
+        ioctl(G.dvb_video_fd, VIDEO_STOP);
+        ioctl(G.dvb_video_fd, VIDEO_SLOWMOTION, 0);
+        ioctl(G.dvb_video_fd, VIDEO_FAST_FORWARD, 0);
+        ioctl(G.dvb_video_fd, VIDEO_SELECT_SOURCE, (void*)VIDEO_SOURCE_DEMUX);
     }
     if(G.dvb_audio_fd>=0){
-        ioctl(G.dvb_audio_fd,AUDIO_CLEAR_BUFFER);
-        ioctl(G.dvb_audio_fd,AUDIO_STOP);
-        ioctl(G.dvb_audio_fd,AUDIO_SELECT_SOURCE,AUDIO_SOURCE_DEMUX);
-        close(G.dvb_audio_fd); G.dvb_audio_fd=-1;
+        ioctl(G.dvb_audio_fd, AUDIO_CLEAR_BUFFER);
+        ioctl(G.dvb_audio_fd, AUDIO_STOP);
+        ioctl(G.dvb_audio_fd, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX);
     }
 }
 
@@ -816,19 +1074,38 @@ static bool open_input()
 
     G.fmt_ctx=avformat_alloc_context();
     if(!G.fmt_ctx){ipc_send_error(1,"alloc failed");return false;}
-    int ret=avformat_open_input(&G.fmt_ctx,G.uri.c_str(),NULL,&opts);
+    AVFormatContext *open_ctx=G.fmt_ctx;
+    int ret=avformat_open_input(&open_ctx,G.uri.c_str(),NULL,&opts);
+    G.fmt_ctx=open_ctx;
     av_dict_free(&opts);
     if(ret<0){char eb[256];av_strerror(ret,eb,sizeof(eb));
         ipc_send_error(1,"open failed: "+std::string(eb));
-        avformat_free_context(G.fmt_ctx);G.fmt_ctx=NULL;return false;}
+        avformat_close_input(&G.fmt_ctx);G.fmt_ctx=NULL;return false;}
 
-    avformat_find_stream_info(G.fmt_ctx,NULL);
+    ret=avformat_find_stream_info(G.fmt_ctx,NULL);
+    if(ret<0){char eb[256];av_strerror(ret,eb,sizeof(eb));
+        ipc_send_error(1,"stream info failed: "+std::string(eb));
+        avformat_close_input(&G.fmt_ctx);G.fmt_ctx=NULL;return false;}
     if(G.fmt_ctx->duration>0) G.duration_ms=G.fmt_ctx->duration/1000;
     G.is_live=(G.fmt_ctx->duration<=0||!G.fmt_ctx->pb||
                (G.fmt_ctx->ctx_flags&AVFMTCTX_NOHEADER));
     G.seekable=!G.is_live||(G.fmt_ctx->pb&&G.fmt_ctx->pb->seekable);
-    G.video_stream_idx=av_find_best_stream(G.fmt_ctx,AVMEDIA_TYPE_VIDEO,-1,-1,NULL,0);
-    G.audio_stream_idx=av_find_best_stream(G.fmt_ctx,AVMEDIA_TYPE_AUDIO,-1,-1,NULL,0);
+    {
+        int vsi=av_find_best_stream(G.fmt_ctx,AVMEDIA_TYPE_VIDEO,-1,-1,NULL,0);
+        int asi=av_find_best_stream(G.fmt_ctx,AVMEDIA_TYPE_AUDIO,-1,-1,NULL,0);
+        /* mp3/flac with embedded cover: ffmpeg reports the picture as a
+         * "video" stream - don't feed it to the video decoder. */
+        if(vsi>=0&&(G.fmt_ctx->streams[vsi]->disposition&AV_DISPOSITION_ATTACHED_PIC)){
+            vsi=-1;
+            for(unsigned i=0;i<G.fmt_ctx->nb_streams;i++){
+                AVStream *s=G.fmt_ctx->streams[i];
+                if(s->codecpar->codec_type==AVMEDIA_TYPE_VIDEO&&
+                   !(s->disposition&AV_DISPOSITION_ATTACHED_PIC)){vsi=(int)i;break;}
+            }
+        }
+        G.video_stream_idx=(vsi>=0)?vsi:-1;
+        G.audio_stream_idx=(asi>=0)?asi:-1;
+    }
 
     G.audio_tracks.clear(); G.sub_tracks.clear();
     for(unsigned i=0;i<G.fmt_ctx->nb_streams;i++){
@@ -897,6 +1174,15 @@ static void send_track_info()
                   jstr("container",G.fmt_ctx->iformat?G.fmt_ctx->iformat->name:"")+",";
     AVDictionaryEntry *title=av_dict_get(G.fmt_ctx->metadata,"title",NULL,0);
     p+=jstr("title",title?title->value:"")+",";
+    {
+        auto md=[&](const char *k){
+            AVDictionaryEntry *e=av_dict_get(G.fmt_ctx->metadata,k,NULL,0);
+            return std::string(e?e->value:"");};
+        p+=jstr("artist",md("artist"))+","+jstr("album",md("album"))+","+
+           jstr("genre",md("genre"))+","+jstr("date",md("date"))+","+
+           jstr("comment",md("comment"))+","+
+           jint("track",atoi(md("track").c_str()))+",";
+    }
     if(vs&&vs->codecpar){
         p+=jstr("vcodec",avcodec_get_name(vs->codecpar->codec_id))+","+
            jint("w",vs->codecpar->width)+","+jint("h",vs->codecpar->height)+",";
@@ -905,6 +1191,24 @@ static void send_track_info()
     }
     p+="\"audio\":"+aa+",\"subs\":"+sa;
     ipc_send("info",p);
+    /* Embedded cover art -> /tmp/.id3coverart (path the MediaPlayer plugin
+     * reads on evUser+13, same as servicemp3). Once per opened file. */
+    static AVFormatContext *cover_for=NULL;
+    if(cover_for!=G.fmt_ctx){
+        cover_for=G.fmt_ctx;
+        for(unsigned i=0;i<G.fmt_ctx->nb_streams;i++){
+            AVStream *s=G.fmt_ctx->streams[i];
+            if((s->disposition&AV_DISPOSITION_ATTACHED_PIC)&&s->attached_pic.size>0){
+                FILE *f=fopen("/tmp/.id3coverart","wb");
+                if(f){
+                    size_t n=fwrite(s->attached_pic.data,1,s->attached_pic.size,f);
+                    fclose(f);
+                    if(n==(size_t)s->attached_pic.size) ipc_send("cover");
+                }
+                break;
+            }
+        }
+    }
 }
 
 static bool start_recording(const std::string &path)
@@ -918,8 +1222,8 @@ static bool start_recording(const std::string &path)
         if(s->codecpar->codec_type!=AVMEDIA_TYPE_VIDEO&&
            s->codecpar->codec_type!=AVMEDIA_TYPE_AUDIO) continue;
         AVStream *os=avformat_new_stream(G.record_ctx,NULL);
-        if(!os)continue;
-        avcodec_parameters_copy(os->codecpar,s->codecpar);
+        if(!os||!os->codecpar)continue;
+        if(avcodec_parameters_copy(os->codecpar,s->codecpar)<0)continue;
         os->codecpar->codec_tag=0;os->time_base=s->time_base;
     }
     if(!(G.record_ctx->oformat->flags&AVFMT_NOFILE))
@@ -927,7 +1231,8 @@ static bool start_recording(const std::string &path)
             avformat_free_context(G.record_ctx);G.record_ctx=NULL;
             pthread_mutex_unlock(&G.record_mutex);return false;}
     if(avformat_write_header(G.record_ctx,NULL)<0){
-        avio_closep(&G.record_ctx->pb);avformat_free_context(G.record_ctx);
+        if(G.record_ctx->pb)avio_closep(&G.record_ctx->pb);
+        avformat_free_context(G.record_ctx);
         G.record_ctx=NULL;pthread_mutex_unlock(&G.record_mutex);return false;}
     G.recording=true;pthread_mutex_unlock(&G.record_mutex);return true;
 }
@@ -945,8 +1250,8 @@ static void stop_recording()
 
 static void process_packet(AVPacket *pkt)
 {
+    if(!G.fmt_ctx||pkt->stream_index<0||(unsigned)pkt->stream_index>=G.fmt_ctx->nb_streams)return;
     AVStream *st=G.fmt_ctx->streams[pkt->stream_index];
-    /* pts in 90kHz Ticks — INVALID_PTS_VALUE wenn unbekannt */
     uint64_t pts90=INVALID_PTS_VALUE;
     if(pkt->pts!=AV_NOPTS_VALUE)
         pts90=(uint64_t)av_rescale_q(pkt->pts,st->time_base,{1,90000});
@@ -971,7 +1276,8 @@ static void process_packet(AVPacket *pkt)
             for(unsigned oi=0;oi<G.record_ctx->nb_streams;oi++)
                 if(G.record_ctx->streams[oi]->codecpar->codec_id==
                    G.fmt_ctx->streams[pkt->stream_index]->codecpar->codec_id){
-                    AVPacket op; av_packet_ref(&op,pkt);
+                    AVPacket op;
+                    if(av_packet_ref(&op,pkt)<0) break;
                     op.stream_index=oi;
                     av_packet_rescale_ts(&op,
                         G.fmt_ctx->streams[pkt->stream_index]->time_base,
@@ -995,13 +1301,18 @@ static void handle_command(const std::string &cmd, const std::string &payload)
         if(G.dvb_video_fd>=0)ioctl(G.dvb_video_fd,VIDEO_CONTINUE);
         if(G.dvb_audio_fd>=0)ioctl(G.dvb_audio_fd,AUDIO_CONTINUE);
     } else if(cmd=="stop"){
-        G.stop_requested=true;
+        g_stop_requested=true;
+    } else if(cmd=="play"){
+        /* NEU: Der Service sendet "play", nachdem er SET_USERAGENT und
+         * SET_HEADERS gesendet hat. Wir setzen das Flag; playback_loop()
+         * wartet darauf. */
+        g_play_requested=true;
     } else if(cmd=="seek"){
         int64_t p=json_get_int(payload,"pos_ms");
-        pthread_mutex_lock(&G.seek_mutex);G.seek_target_ms=p;pthread_mutex_unlock(&G.seek_mutex);
+        pthread_mutex_lock(&G.seek_mutex);g_seek_target_ms=p;pthread_mutex_unlock(&G.seek_mutex);
     } else if(cmd=="seek_rel"){
         int64_t d=json_get_int(payload,"delta_ms");
-        pthread_mutex_lock(&G.seek_mutex);G.seek_target_ms=G.position_ms+d;pthread_mutex_unlock(&G.seek_mutex);
+        pthread_mutex_lock(&G.seek_mutex);g_seek_target_ms=G.position_ms+d;pthread_mutex_unlock(&G.seek_mutex);
     } else if(cmd=="set_speed"){
         G.speed=(int)json_get_int(payload,"speed");
         if(G.dvb_video_fd>=0){
@@ -1012,6 +1323,7 @@ static void handle_command(const std::string &cmd, const std::string &payload)
         int id=(int)json_get_int(payload,"id");
         for(size_t i=0;i<G.audio_tracks.size();i++){
             if(G.audio_tracks[i].stream_idx!=id)continue;
+            if(id<0||!G.fmt_ctx||(unsigned)id>=G.fmt_ctx->nb_streams)break;
             if(G.audio_stream_idx>=0)G.fmt_ctx->streams[G.audio_stream_idx]->discard=AVDISCARD_ALL;
             G.audio_stream_idx=id;G.active_audio_track=(int)i;
             G.fmt_ctx->streams[id]->discard=AVDISCARD_DEFAULT;
@@ -1020,22 +1332,38 @@ static void handle_command(const std::string &cmd, const std::string &payload)
         }
     } else if(cmd=="set_subtitle"){
         int id=(int)json_get_int(payload,"id");
-        if(id<0){if(G.sub_stream_idx>=0)G.fmt_ctx->streams[G.sub_stream_idx]->discard=AVDISCARD_ALL;G.sub_stream_idx=-1;}
-        else{if(G.sub_stream_idx>=0)G.fmt_ctx->streams[G.sub_stream_idx]->discard=AVDISCARD_ALL;
-             G.sub_stream_idx=id;G.fmt_ctx->streams[id]->discard=AVDISCARD_DEFAULT;}
-    } else if(cmd=="set_ua"){G.useragent=json_get_str(payload,"ua");
-    } else if(cmd=="set_headers"){G.extra_headers=json_get_str(payload,"headers");
-    } else if(cmd=="record_start"){start_recording(json_get_str(payload,"path"));
-    } else if(cmd=="record_stop"){stop_recording();
-    } else if(cmd=="set_bufsize"){G.buffer_size=(int)json_get_int(payload,"bytes");
-    } else if(cmd=="get_info"){if(G.fmt_ctx)send_track_info();}
+        if(!G.fmt_ctx) return;
+        if(id<0){
+            if(G.sub_stream_idx>=0)
+                G.fmt_ctx->streams[G.sub_stream_idx]->discard=AVDISCARD_ALL;
+            G.sub_stream_idx=-1;
+        }
+        else if((unsigned)id<G.fmt_ctx->nb_streams){
+            if(G.sub_stream_idx>=0)
+                G.fmt_ctx->streams[G.sub_stream_idx]->discard=AVDISCARD_ALL;
+            G.sub_stream_idx=id;
+            G.fmt_ctx->streams[id]->discard=AVDISCARD_DEFAULT;
+        }
+    } else if(cmd=="set_ua"){
+        G.useragent=json_get_str(payload,"ua");
+    } else if(cmd=="set_headers"){
+        G.extra_headers=json_get_str(payload,"headers");
+    } else if(cmd=="record_start"){
+        start_recording(json_get_str(payload,"path"));
+    } else if(cmd=="record_stop"){
+        stop_recording();
+    } else if(cmd=="set_bufsize"){
+        G.buffer_size=(int)json_get_int(payload,"bytes");
+    } else if(cmd=="get_info"){
+        if(G.fmt_ctx)send_track_info();
+    }
 }
-
 static void poll_ipc()
 {
-    if(G.ipc_fd<0)return;
+    if(G.ipc_fd<0) return;
     char buf[4096]; ssize_t n=read(G.ipc_fd,buf,sizeof(buf)-1);
-    if(n<=0)return; buf[n]=0; G.recv_buf+=buf;
+    if(n<=0) return;
+    buf[n]=0; G.recv_buf+=buf;
     size_t pos;
     while((pos=G.recv_buf.find('\n'))!=std::string::npos){
         std::string line=G.recv_buf.substr(0,pos);G.recv_buf=G.recv_buf.substr(pos+1);
@@ -1051,20 +1379,40 @@ static void playback_loop()
     AVPacket *pkt=av_packet_alloc();
     if(!pkt){ipc_send_error(1,"av_packet_alloc failed");return;}
 
-    ipc_send("started");
     send_track_info();
     if(G.video_stream_idx>=0){
         AVStream *vs=G.fmt_ctx->streams[G.video_stream_idx];
-        int fps=vs->avg_frame_rate.den>0?(int)(1000.0*vs->avg_frame_rate.num/vs->avg_frame_rate.den):0;
-        ipc_send("video_size",jint("w",vs->codecpar->width)+","+jint("h",vs->codecpar->height)+","+
-                 jint("aspect",2)+","+jint("fps",fps)+","+jbool("progressive",true));
+        int fps=vs->avg_frame_rate.den>0
+                ?(int)(1000.0*vs->avg_frame_rate.num/vs->avg_frame_rate.den):0;
+        ipc_send("video_size",
+                 jint("w",vs->codecpar->width)+","+
+                 jint("h",vs->codecpar->height)+","+
+                 jint("aspect",2)+","+
+                 jint("fps",fps)+","+
+                 jbool("progressive",true));
     }
+    ipc_send("started");
+
+    /* NEU: Auf 'play' warten, max. 10 Sekunden. Der Service sendet
+     * 'play', nachdem er SET_USERAGENT und SET_HEADERS abgesetzt hat.
+     * Ohne dieses Warten würde die Wiedergabe starten, bevor der
+     * Service die Header konfiguriert hat. */
+    {
+        int waited = 0;
+        while (!g_play_requested.load() && !g_stop_requested.load() && waited < 10000) {
+            poll_ipc();
+            usleep(10000);
+            waited += 10;
+        }
+    }
+    if (g_stop_requested.load()) { av_packet_free(&pkt); return; }
+
     int64_t last_pos=av_gettime_relative()/1000;
 
-    while(!G.stop_requested){
+    while(!g_stop_requested){
         pthread_mutex_lock(&G.seek_mutex);
-        int64_t seek_t=G.seek_target_ms.load();
-        if(seek_t>=0)G.seek_target_ms=-1;
+        int64_t seek_t=g_seek_target_ms.load();
+        if(seek_t>=0)g_seek_target_ms=-1;
         pthread_mutex_unlock(&G.seek_mutex);
 
         if(seek_t>=0){
@@ -1075,6 +1423,7 @@ static void playback_loop()
                 if(G.dvb_audio_fd>=0)ioctl(G.dvb_audio_fd,AUDIO_CLEAR_BUFFER);
                 g_h264.reset(); g_h265.reset();
                 g_mpeg2_must_send_header=true; g_mpeg4_initial_header=true;
+                g_vc1_initial=true; g_wmv_initial=true;
             }
         }
 
@@ -1083,10 +1432,12 @@ static void playback_loop()
 
         int ret=av_read_frame(G.fmt_ctx,pkt);
         if(ret==AVERROR_EOF){ipc_send("eof");break;}
-        if(ret==AVERROR(EAGAIN)){usleep(5000);continue;}
+        if(ret==AVERROR(EAGAIN)){poll_ipc();usleep(5000);continue;}
         if(ret<0){
             char eb[256];av_strerror(ret,eb,sizeof(eb));
-            if(G.is_live){usleep(500000);av_seek_frame(G.fmt_ctx,-1,0,AVSEEK_FLAG_BACKWARD);continue;}
+            if(G.is_live){usleep(500000);
+                if(av_seek_frame(G.fmt_ctx,-1,0,AVSEEK_FLAG_BACKWARD)<0){ipc_send_error(4,eb);break;}
+                continue;}
             ipc_send_error(4,eb);break;
         }
 
@@ -1108,7 +1459,7 @@ static void playback_loop()
 /* ====================================================================
  * Signal / main
  * ==================================================================== */
-static void sig_handler(int){G.stop_requested=true;}
+static void sig_handler(int){g_stop_requested=true;}
 
 int main(int argc,char *argv[])
 {
@@ -1120,6 +1471,8 @@ int main(int argc,char *argv[])
     }
     if(socket_path.empty()||G.uri.empty()){
         fprintf(stderr,"Usage: %s --socket=PATH --uri URI\n",argv[0]);return 1;}
+
+    setvbuf(stderr, NULL, _IONBF, 0);
 
     fprintf(stderr,"[player] v%s uri=%s\n",PLAYER_VERSION,G.uri.c_str());
     signal(SIGTERM,sig_handler);signal(SIGINT,sig_handler);signal(SIGPIPE,SIG_IGN);
@@ -1135,7 +1488,7 @@ int main(int argc,char *argv[])
             if(connect(fd,(struct sockaddr*)&addr,sizeof(addr))==0)ok=1;
             else usleep(100000);
         }
-        if(!ok){fprintf(stderr,"[player] IPC connect failed\n");return 1;}
+        if(!ok){fprintf(stderr,"[player] IPC connect failed\n");close(fd);return 1;}
         fcntl(fd,F_SETFL,fcntl(fd,F_GETFL,0)|O_NONBLOCK);
         G.ipc_fd=fd;
     }
@@ -1145,17 +1498,25 @@ int main(int argc,char *argv[])
 #endif
     avformat_network_init();
 
-    /* DVB öffnen und sofort in MEMORY-Modus schalten */
     G.hw_sink_available=open_dvb_sink();
 
-    /* Auf 'play' und initiale Konfiguration von E2 warten */
     {fd_set r;FD_ZERO(&r);FD_SET(G.ipc_fd,&r);
      struct timeval tv={10,0};select(G.ipc_fd+1,&r,NULL,NULL,&tv);poll_ipc();}
 
-    if(!open_input()){close_dvb_sink();close(G.ipc_fd);return 1;}
+    if(!open_input()){close_dvb_sink();avformat_network_deinit();close(G.ipc_fd);return 1;}
 
     if(G.hw_sink_available){
-        configure_dvb_video_codec();
+        if(G.video_stream_idx>=0){
+            configure_dvb_video_codec();
+        } else {
+            fprintf(stderr,"[player] audio-only: releasing DVB video device\n");
+            ioctl(G.dvb_video_fd, VIDEO_CLEAR_BUFFER);
+            ioctl(G.dvb_video_fd, VIDEO_STOP);
+            ioctl(G.dvb_video_fd, VIDEO_SLOWMOTION, 0);
+            ioctl(G.dvb_video_fd, VIDEO_FAST_FORWARD, 0);
+            ioctl(G.dvb_video_fd, VIDEO_SELECT_SOURCE, (void*)VIDEO_SOURCE_DEMUX);
+            G.dvb_video_fd = -1;
+        }
         if(G.audio_stream_idx>=0)
             configure_dvb_audio_codec(
                 G.fmt_ctx->streams[G.audio_stream_idx]->codecpar->codec_id);

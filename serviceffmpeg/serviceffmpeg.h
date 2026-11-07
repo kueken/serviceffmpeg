@@ -1,18 +1,12 @@
 #ifndef __SERVICEFFMPEG_H
 #define __SERVICEFFMPEG_H
 
+#include <sys/types.h>            /* pid_t */
 /*
  * serviceffmpeg.h
  *
  * Enigma2 media service plugin - pure FFmpeg backend
  * External player process architecture (no GStreamer dependency)
- *
- * Fixed for scarthgap / OpenPLi 9.x:
- *   - sigc++-3.0: slot2<> -> slot<void(T*,int)>, Signal2 -> Signal<void(T*,int)>
- *   - iPlayableService / iRecordableService: new virtual interface methods
- *   - iAudioTrackInfo: m_language (not m_lang), no m_type member
- *   - eWidget: no destroy()/setPage() - use eSubtitleWidget
- *   - iServiceInformation: no sAudioCodec/sVideoCodec constants in this version
  *
  * License: GPL v2
  */
@@ -22,9 +16,15 @@
 #include <lib/base/thread.h>
 #include <lib/base/object.h>
 #include <lib/base/nconfig.h>
+#include <lib/base/message.h>
 #include <lib/dvb/epgcache.h>
+#include <lib/dvb/pmt.h>
+#include <lib/dvb/subtitle.h>
+#include <lib/dvb/teletext.h>
 #include <lib/service/iservice.h>
 #include <lib/gui/esubtitle.h>
+#include <lib/dvb/metaparser.h>
+#include <Python.h>               /* PyObject, ePyObject — required for iCueSheet */
 
 #include <string>
 #include <list>
@@ -67,6 +67,7 @@
 #define SFMP_EVT_SUBTITLE_PAGE  "subtitle"
 #define SFMP_EVT_SUBTITLE_CLEAR "subtitle_clear"
 #define SFMP_EVT_RECORD_INFO    "record_info"
+#define SFMP_EVT_COVER          "cover"
 
 #define SFMP_ERR_OPEN_FAILED    1
 #define SFMP_ERR_CODEC_FAILED   2
@@ -118,6 +119,13 @@ struct sFfmpegStreamInfo
     bool                               is_live;
     std::string                        title;
     std::string                        container;
+    /* ID3 / container tags (MediaPlayer plugin shows these) */
+    std::string                        artist;
+    std::string                        album;
+    std::string                        genre;
+    std::string                        date;
+    std::string                        comment;
+    int                                track = 0;
 };
 
 /* ======================================================================
@@ -166,7 +174,7 @@ public:
     eServiceFactoryFfmpeg();
     ~eServiceFactoryFfmpeg();
 
-    enum { id = 0x1002 };
+    enum { id = 0x1001 };  /* eServiceMP3 slot: E2 always generates 0x1001 for local media */
 
     RESULT play(const eServiceReference &, ePtr<iPlayableService> &);
     RESULT record(const eServiceReference &, ePtr<iRecordableService> &);
@@ -177,21 +185,6 @@ public:
 
 /* ======================================================================
  * eServiceFfmpeg
- *
- * sigc++-3.0 migration:
- *   OLD: sigc::slot2<void, T*, int>              -> NEW: sigc::slot<void(T*,int)>
- *   OLD: Signal2<void, T*, int>  (Enigma2 macro) -> NEW: Signal<void(T*,int)>
- *   OLD: connectEvent signature uses slot2<>     -> NEW: uses slot<void(T*,int)>
- *
- * iPlayableService / iRecordableService new mandatory virtuals (scarthgap):
- *   setTarget, audioChannel, timeshift, tap, cueSheet, audioDelay,
- *   rdsDecoder, stream, streamed, keys, setQpipMode (iPlayableService)
- *   prepare, prepareStreaming, start(bool), stream, getFilenameExtension (iRecordableService)
- *
- * iSubtitleOutput (scarthgap):
- *   enableSubtitles(iSubtitleUser*, SubtitleTrack&)
- *   disableSubtitles()   -- no parameter
- *
  * ====================================================================== */
 class eServiceFfmpeg
     : public iPlayableService
@@ -201,6 +194,7 @@ class eServiceFfmpeg
     , public iAudioTrackSelection
     , public iSubtitleOutput
     , public iRecordableService
+    , public iCueSheet
 {
     DECLARE_REF(eServiceFfmpeg);
 
@@ -209,7 +203,6 @@ public:
     ~eServiceFfmpeg();
 
     /* --- iPlayableService --- */
-    /* sigc++-3.0: slot<void(T*,int)> */
     RESULT connectEvent(const sigc::slot<void(iPlayableService*,int)> &event,
                         ePtr<eConnection> &connection);
     RESULT start();
@@ -221,7 +214,6 @@ public:
     RESULT audioTracks(ePtr<iAudioTrackSelection> &ptr);
     RESULT subtitle(ePtr<iSubtitleOutput> &ptr);
     RESULT info(ePtr<iServiceInformation> &ptr);
-    /* new mandatory virtuals in scarthgap iPlayableService */
     RESULT setTarget(int target, bool noaudio = false);
     RESULT audioChannel(ePtr<iAudioChannelSelection> &ptr);
     RESULT timeshift(ePtr<iTimeshiftService> &ptr);
@@ -236,9 +228,16 @@ public:
 
     /* --- iServiceInformation --- */
     RESULT getName(std::string &name);
+    RESULT getEvent(ePtr<eServiceEvent> &evt, int nownext);
     int    getInfo(int w);
     std::string getInfoString(int w);
     ePtr<iServiceInfoContainer> getInfoObject(int w);
+
+    /* --- iCueSheet ---
+     * Inline stubs: no class-name qualification inside class body */
+    PyObject *getCutList()           { return PyList_New(0); }
+    void      setCutList(ePyObject)  {}
+    void      setCutListEnable(int)  {}
 
     /* --- iPauseableService --- */
     RESULT pause();
@@ -265,12 +264,10 @@ public:
     RESULT getSubtitleList(std::vector<SubtitleTrack> &subtitle_list);
 
     /* --- iRecordableService --- */
-    /* sigc++-3.0 slot */
     RESULT connectEvent(const sigc::slot<void(iRecordableService*,int)> &event,
                         ePtr<eConnection> &connection);
     RESULT getError(int &error);
     RESULT subServices(ePtr<iSubserviceList> &ptr);
-    /* new mandatory virtuals in scarthgap iRecordableService */
     RESULT prepare(const char *filename,
                    time_t begTime=-1, time_t endTime=-1, int eit_event_id=-1,
                    const char *name=0, const char *descr=0, const char *tags=0,
@@ -297,6 +294,7 @@ private:
 
     bool                        m_paused;
     bool                        m_buffering;
+    bool                        m_eof_sent;
     int                         m_buffer_percentage;
     pts_t                       m_last_position;
     pts_t                       m_duration;
@@ -307,7 +305,6 @@ private:
     int                         m_width, m_height, m_aspect, m_framerate;
     bool                        m_progressive;
 
-    /* Subtitle: use iSubtitleUser* (scarthgap), no eWidget */
     iSubtitleUser              *m_subtitle_user;
 
     int                         m_error_code;
@@ -316,7 +313,6 @@ private:
     bool                        m_recording;
     std::string                 m_record_path;
 
-    /* sigc++-3.0: Signal<void(T*,int)> */
     sigc::signal<void(iRecordableService*,int)>  m_rec_event;
     sigc::signal<void(iPlayableService*,int)>    m_event;
 
@@ -324,6 +320,7 @@ private:
     ePtr<eServiceEvent>         m_event_now;
     ePtr<eServiceEvent>         m_event_next;
 
+    /* pid_t requires <sys/types.h> (included above) */
     pid_t                       m_player_pid;
     int                         m_ipc_fd;
     std::string                 m_socket_path;
@@ -342,8 +339,8 @@ private:
     void        parseTrackList(const std::string &json);
     void        parseVideoInfo(const std::string &json);
     void        parseSubtitle(const std::string &json);
-    pts_t       msToPts(int64_t ms) const  { return ms * 90;  }
-    int64_t     ptsToMs(pts_t pts) const   { return pts / 90; }
+    pts_t       msToPts(int64_t ms) const  { return (pts_t)(ms * 90);  }
+    int64_t     ptsToMs(pts_t pts) const   { return (int64_t)(pts / 90); }
 };
 
 #endif /* __SERVICEFFMPEG_H */
