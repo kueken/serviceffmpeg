@@ -67,6 +67,7 @@
 #define SFMP_EVT_SUBTITLE_PAGE  "subtitle"
 #define SFMP_EVT_SUBTITLE_CLEAR "subtitle_clear"
 #define SFMP_EVT_RECORD_INFO    "record_info"
+#define SFMP_EVT_COVER          "cover"
 
 #define SFMP_ERR_OPEN_FAILED    1
 #define SFMP_ERR_CODEC_FAILED   2
@@ -118,6 +119,13 @@ struct sFfmpegStreamInfo
     bool                               is_live;
     std::string                        title;
     std::string                        container;
+    /* ID3 / container tags (MediaPlayer plugin shows these) */
+    std::string                        artist;
+    std::string                        album;
+    std::string                        genre;
+    std::string                        date;
+    std::string                        comment;
+    int                                track = 0;
 };
 
 /* ======================================================================

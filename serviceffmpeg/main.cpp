@@ -1093,6 +1093,16 @@ static bool open_input()
     {
         int vsi=av_find_best_stream(G.fmt_ctx,AVMEDIA_TYPE_VIDEO,-1,-1,NULL,0);
         int asi=av_find_best_stream(G.fmt_ctx,AVMEDIA_TYPE_AUDIO,-1,-1,NULL,0);
+        /* mp3/flac with embedded cover: ffmpeg reports the picture as a
+         * "video" stream - don't feed it to the video decoder. */
+        if(vsi>=0&&(G.fmt_ctx->streams[vsi]->disposition&AV_DISPOSITION_ATTACHED_PIC)){
+            vsi=-1;
+            for(unsigned i=0;i<G.fmt_ctx->nb_streams;i++){
+                AVStream *s=G.fmt_ctx->streams[i];
+                if(s->codecpar->codec_type==AVMEDIA_TYPE_VIDEO&&
+                   !(s->disposition&AV_DISPOSITION_ATTACHED_PIC)){vsi=(int)i;break;}
+            }
+        }
         G.video_stream_idx=(vsi>=0)?vsi:-1;
         G.audio_stream_idx=(asi>=0)?asi:-1;
     }
@@ -1164,6 +1174,15 @@ static void send_track_info()
                   jstr("container",G.fmt_ctx->iformat?G.fmt_ctx->iformat->name:"")+",";
     AVDictionaryEntry *title=av_dict_get(G.fmt_ctx->metadata,"title",NULL,0);
     p+=jstr("title",title?title->value:"")+",";
+    {
+        auto md=[&](const char *k){
+            AVDictionaryEntry *e=av_dict_get(G.fmt_ctx->metadata,k,NULL,0);
+            return std::string(e?e->value:"");};
+        p+=jstr("artist",md("artist"))+","+jstr("album",md("album"))+","+
+           jstr("genre",md("genre"))+","+jstr("date",md("date"))+","+
+           jstr("comment",md("comment"))+","+
+           jint("track",atoi(md("track").c_str()))+",";
+    }
     if(vs&&vs->codecpar){
         p+=jstr("vcodec",avcodec_get_name(vs->codecpar->codec_id))+","+
            jint("w",vs->codecpar->width)+","+jint("h",vs->codecpar->height)+",";
@@ -1172,6 +1191,24 @@ static void send_track_info()
     }
     p+="\"audio\":"+aa+",\"subs\":"+sa;
     ipc_send("info",p);
+    /* Embedded cover art -> /tmp/.id3coverart (path the MediaPlayer plugin
+     * reads on evUser+13, same as servicemp3). Once per opened file. */
+    static AVFormatContext *cover_for=NULL;
+    if(cover_for!=G.fmt_ctx){
+        cover_for=G.fmt_ctx;
+        for(unsigned i=0;i<G.fmt_ctx->nb_streams;i++){
+            AVStream *s=G.fmt_ctx->streams[i];
+            if((s->disposition&AV_DISPOSITION_ATTACHED_PIC)&&s->attached_pic.size>0){
+                FILE *f=fopen("/tmp/.id3coverart","wb");
+                if(f){
+                    size_t n=fwrite(s->attached_pic.data,1,s->attached_pic.size,f);
+                    fclose(f);
+                    if(n==(size_t)s->attached_pic.size) ipc_send("cover");
+                }
+                break;
+            }
+        }
+    }
 }
 
 static bool start_recording(const std::string &path)

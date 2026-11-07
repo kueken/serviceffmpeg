@@ -613,6 +613,9 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
         eDebug("[serviceffmpeg] evStarted");
         m_state = stRunning;
         m_event((iPlayableService*)this, iPlayableService::evStart);
+        /* BufferIndicator shows "No data received yet" 1s after evStart
+         * and only hides on this event (servicemp3 sends it as well). */
+        m_event((iPlayableService*)this, iPlayableService::evGstreamerPlayStarted);
         m_nownext_timer->startLongTimer(3);
     }
     else if (evt == SFMP_EVT_EOF)
@@ -664,6 +667,12 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
         m_duration   = msToPts(json_get_int(payload, "dur_ms"));
         m_stream_info.container = json_get_str(payload, "container");
         m_stream_info.title     = json_get_str(payload, "title");
+        m_stream_info.artist    = json_get_str(payload, "artist");
+        m_stream_info.album     = json_get_str(payload, "album");
+        m_stream_info.genre     = json_get_str(payload, "genre");
+        m_stream_info.date      = json_get_str(payload, "date");
+        m_stream_info.comment   = json_get_str(payload, "comment");
+        m_stream_info.track     = (int)json_get_int(payload, "track");
         parseTrackList(payload);
         parseVideoInfo(payload);
         m_event((iPlayableService*)this, iPlayableService::evUpdatedInfo);
@@ -689,6 +698,11 @@ void eServiceFfmpeg::handleEvent(const std::string &evt, const std::string &payl
     else if (evt == SFMP_EVT_SUBTITLE_PAGE)
     {
         parseSubtitle(payload);
+    }
+    else if (evt == SFMP_EVT_COVER)
+    {
+        /* /tmp/.id3coverart written by the player; MediaPlayer listens to evUser+13 */
+        m_event((iPlayableService*)this, iPlayableService::evUser + 13);
     }
     else if (evt == SFMP_EVT_SUBTITLE_CLEAR)
     {
@@ -1141,6 +1155,25 @@ int eServiceFfmpeg::getInfo(int w)
     case iServiceInformation::sProgressive:     return m_progressive ? 1 : 0;
     case iServiceInformation::sBuffer:          return m_buffer_percentage;
     case iServiceInformation::sVideoType:       return videoTypeFromCodec(m_stream_info.video.codec);
+    case iServiceInformation::sTagTrackNumber:  return m_stream_info.track;
+    /* servicemp3 returns 0 (not -1) when a numeric tag is absent;
+     * MediaPlayer tests these values for truth. */
+    case iServiceInformation::sTagTrackCount:
+    case iServiceInformation::sTagAlbumVolumeNumber:
+    case iServiceInformation::sTagAlbumVolumeCount:
+        return 0;
+    /* enigma2 protocol: resIsString (-2) tells the caller to ask
+     * getInfoString() - without it Python code stops at "N/A". */
+    case iServiceInformation::sTagTitle:
+    case iServiceInformation::sTagArtist:
+    case iServiceInformation::sTagAlbum:
+    case iServiceInformation::sTagGenre:
+    case iServiceInformation::sTagDate:
+    case iServiceInformation::sTagComment:
+    case iServiceInformation::sTagAudioCodec:
+    case iServiceInformation::sTagVideoCodec:
+    case iServiceInformation::sUser + 12:
+        return iServiceInformation::resIsString;
     }
     return iServiceInformation::resNA;
 }
@@ -1151,7 +1184,13 @@ std::string eServiceFfmpeg::getInfoString(int w)
     {
     case iServiceInformation::sServiceref:  return m_ref.toString();
     case iServiceInformation::sUser + 12:   return m_error_message;
+    case iServiceInformation::sProvider:    return m_ref.path.find("://") != std::string::npos ? "IPTV" : "FILE";
     case iServiceInformation::sTagTitle:    return m_stream_info.title;
+    case iServiceInformation::sTagArtist:   return m_stream_info.artist;
+    case iServiceInformation::sTagAlbum:    return m_stream_info.album;
+    case iServiceInformation::sTagGenre:    return m_stream_info.genre;
+    case iServiceInformation::sTagDate:     return m_stream_info.date;
+    case iServiceInformation::sTagComment:  return m_stream_info.comment;
     case iServiceInformation::sTagVideoCodec: return m_stream_info.video.codec;
     case iServiceInformation::sTagAudioCodec:
         if (m_current_audio_track >= 0 &&
