@@ -736,11 +736,13 @@ void eServiceFfmpeg::parseTrackList(const std::string &json)
     {
         size_t start = json.find('[', apos);
         size_t end   = json.find(']', start);
+        if (start == std::string::npos || end == std::string::npos || end < start) return;
         std::string arr = json.substr(start, end - start + 1);
         size_t obj_start = 0;
         while ((obj_start = arr.find('{', obj_start)) != std::string::npos)
         {
             size_t obj_end = arr.find('}', obj_start);
+            if (obj_end == std::string::npos) break;
             std::string obj = arr.substr(obj_start, obj_end - obj_start + 1);
             sFfmpegAudioTrack t;
             t.id         = (int)json_get_int(obj, "id");
@@ -760,11 +762,13 @@ void eServiceFfmpeg::parseTrackList(const std::string &json)
     {
         size_t start = json.find('[', spos);
         size_t end   = json.find(']', start);
+        if (start == std::string::npos || end == std::string::npos || end < start) return;
         std::string arr = json.substr(start, end - start + 1);
         size_t obj_start = 0;
         while ((obj_start = arr.find('{', obj_start)) != std::string::npos)
         {
             size_t obj_end = arr.find('}', obj_start);
+            if (obj_end == std::string::npos) break;
             std::string obj = arr.substr(obj_start, obj_end - obj_start + 1);
             sFfmpegSubtitleTrack t;
             t.id       = (int)json_get_int(obj, "id");
