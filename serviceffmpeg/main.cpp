@@ -411,8 +411,7 @@ static void h264_prepare_codec_data(const uint8_t *extra, int extra_size)
     }
     if(g_h264.codecData) free(g_h264.codecData);
     g_h264.codecData=(uint8_t*)malloc(tmp_len);
-    g_h264.codecDataLen=tmp_len;
-    if(g_h264.codecData) memcpy(g_h264.codecData,tmp,tmp_len);
+    if(g_h264.codecData){ memcpy(g_h264.codecData,tmp,tmp_len); g_h264.codecDataLen=tmp_len; }
     else g_h264.codecDataLen=0;
 }
 
@@ -421,15 +420,17 @@ static bool write_video_h264(int fd, const uint8_t *data, int size,
 {
     if(fd<0||!data||size<=0) return false;
     static const uint8_t sc[]={0,0,0,1};
-    uint8_t PesHeader[PES_MAX_HEADER_SIZE];
+    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 8];
 
     int32_t fake_sc = (0 << 8) | 0x31;
 
     bool is_annexb=(size>3)&&(data[0]==0&&data[1]==0&&data[2]==0&&data[3]==1);
 
+    if(!g_h264.codecData && extra) h264_prepare_codec_data(extra,extra_size);
+
     if(is_annexb) {
         if(!g_h264.sps_pps_in_stream) {
-            for(int i=0;i<(int)size-5&&i<64;i++) {
+            for(int i=0;i<(int)size-5;i++) {
                 if(data[i]==0&&data[i+1]==0&&data[i+2]==0&&data[i+3]==1&&
                    (data[i+4]==0x67||data[i+4]==0x68)) {
                     g_h264.sps_pps_in_stream=true; break;
@@ -559,8 +560,7 @@ static void h265_prepare_codec_data(const uint8_t *extra, int extra_size)
     }
     if(g_h265.codecData) free(g_h265.codecData);
     g_h265.codecData=(uint8_t*)malloc(tmp_len);
-    g_h265.codecDataLen=tmp_len;
-    if(g_h265.codecData) memcpy(g_h265.codecData,tmp,tmp_len);
+    if(g_h265.codecData){ memcpy(g_h265.codecData,tmp,tmp_len); g_h265.codecDataLen=tmp_len; }
     else g_h265.codecDataLen=0;
 }
 
@@ -569,7 +569,7 @@ static bool write_video_h265(int fd, const uint8_t *data, int size,
 {
     if(fd<0||!data||size<=0) return false;
     static uint8_t sc_buf[]={0,0,0,1};
-    uint8_t PesHeader[PES_MAX_HEADER_SIZE];
+    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 8];
     int32_t fake_sc=(0<<8)|0x31;
 
     if(!g_h265.codecData && extra) h265_prepare_codec_data(extra,extra_size);
@@ -759,7 +759,7 @@ static bool write_video_vp(int fd, const uint8_t *data, int size,
                             uint64_t pts, bool is_vp6, bool is_vp9)
 {
     if(fd<0||!data||size<=0) return false;
-    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 32];
+    uint8_t PesHeader[PES_MAX_HEADER_SIZE + 64];
 
     uint64_t use_pts = pts;
 
@@ -935,7 +935,13 @@ static void ipc_send(const std::string &evt, const std::string &params="")
     std::string m="{\"evt\":\""+evt+"\"";
     if(!params.empty()) m+=","+params;
     m+="}\n";
-    write(G.ipc_fd,m.c_str(),m.length());
+    size_t off=0;
+    while(off<m.length()){
+        ssize_t w=write(G.ipc_fd,m.c_str()+off,m.length()-off);
+        if(w<0){ if(errno==EINTR) continue; break; }
+        if(w==0) break;
+        off+=(size_t)w;
+    }
 }
 static void ipc_send_error(int c,const std::string &m)
 { ipc_send("error",jint("code",c)+","+jstr("msg",m)); }
@@ -1321,9 +1327,9 @@ static void handle_command(const std::string &cmd, const std::string &payload)
         }
     } else if(cmd=="set_audio"){
         int id=(int)json_get_int(payload,"id");
+        if(id<0||!G.fmt_ctx||(unsigned)id>=G.fmt_ctx->nb_streams) return;
         for(size_t i=0;i<G.audio_tracks.size();i++){
             if(G.audio_tracks[i].stream_idx!=id)continue;
-            if(id<0||!G.fmt_ctx||(unsigned)id>=G.fmt_ctx->nb_streams)break;
             if(G.audio_stream_idx>=0)G.fmt_ctx->streams[G.audio_stream_idx]->discard=AVDISCARD_ALL;
             G.audio_stream_idx=id;G.active_audio_track=(int)i;
             G.fmt_ctx->streams[id]->discard=AVDISCARD_DEFAULT;
@@ -1416,7 +1422,7 @@ static void playback_loop()
         pthread_mutex_unlock(&G.seek_mutex);
 
         if(seek_t>=0){
-            if(av_seek_frame(G.fmt_ctx,-1,seek_t*1000,
+            if(av_seek_frame(G.fmt_ctx,-1,av_rescale_q(seek_t,{1,1000},{1,AV_TIME_BASE}),
                              seek_t<G.position_ms?AVSEEK_FLAG_BACKWARD:0)>=0){
                 G.position_ms=seek_t;
                 if(G.dvb_video_fd>=0)ioctl(G.dvb_video_fd,VIDEO_CLEAR_BUFFER);
